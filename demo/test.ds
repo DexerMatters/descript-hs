@@ -1,0 +1,4 @@
+{
+  type Endo<A> = (A, Endo<A>);
+  check Endo
+}
