@@ -29,10 +29,13 @@ library
       ElabUtils
       EvalT
       EvalTUtils
+      Interpret
       Lib
       Parser
+      Program
       Syn
       Term
+      Typing
       Utils
   other-modules:
       Paths_descript_hs

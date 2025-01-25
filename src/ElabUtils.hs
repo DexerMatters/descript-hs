@@ -9,10 +9,9 @@ module ElabUtils where
 
 
 import           Syn
-import           Utils (MState (runMState), get, put, modify, gets, throw)
-import GHC.Arr ((//), (!), assocs)
+import           Utils (MState (runMState), modify, gets, throw)
+import GHC.Arr ((//), (!), assocs, Array, array)
 import Data.Maybe (fromJust, isJust)
-import Debug.Trace (traceM)
 
 data ElabError = NeverHappens
                | UnboundVariable String
@@ -27,12 +26,18 @@ data ElabError = NeverHappens
   deriving (Show)
 
 data ElabEnv = ElabEnv { counter :: Int
-                       , bindings :: [(String, TypeTerm)]
+                       , bindings :: [(String, ElabStage)]
                        , typeBindings :: [(String, TypeTerm)]
                        , constrs :: ConstrEnv
                        }
 
-type ElabState = MState ElabEnv ElabError
+data ElabStage = Elaborated TypeTerm | Unelaborated ExprTerm | ElaborationError ElabError
+
+instance Show ElabStage where
+  show (Elaborated ty) = show ty
+  show (Unelaborated expr) = show expr
+
+type ElabState = Utils.MState ElabEnv ElabError
 
 instance Show ElabEnv where
   show ElabEnv { bindings, constrs } =
@@ -45,47 +50,48 @@ instance Show ElabEnv where
 emptyEnv :: ElabEnv
 emptyEnv = ElabEnv 0 [] [] initialConstrEnv
 
+
 fresh :: ElabState Int
 fresh = do
-  c <- gets counter
-  modify $ \env -> env { counter = c + 1 }
+  c <- Utils.gets counter
+  Utils.modify $ \env -> env { counter = c + 1 }
   pure c
 
 newTypeVar :: ElabState Int
 newTypeVar = do
   ref <- fresh
-  modify $ \env -> env {
+  Utils.modify $ \env -> env {
     constrs = env.constrs // [(ref, Just $ Constr [] [] False)]
   }
   pure ref
 
 newBinding :: String -> TypeTerm -> ElabState ()
 newBinding name ty = do
-  modify $ \env -> env {
-    bindings = (name, ty):bindings env
+  Utils.modify $ \env -> env {
+    bindings = (name, Elaborated ty):bindings env
   }
 
 newTypeBinding :: String -> TypeTerm -> ElabState ()
 newTypeBinding name ty = do
-  modify $ \env -> env {
+  Utils.modify $ \env -> env {
     typeBindings = (name, ty):typeBindings env
   }
 
 lookupType :: String -> ElabState TypeTerm
 lookupType name = do
-  env <- gets typeBindings
+  env <- Utils.gets typeBindings
   case lookup name env of
     Just ty -> pure ty
-    Nothing -> throw $ UnboundVariable name
+    Nothing -> Utils.throw $ UnboundVariable name
 
 getConstr :: Int -> ElabState (Maybe Constr)
 getConstr ref = do
-  env <- gets constrs
+  env <- Utils.gets constrs
   pure $ env ! ref
 
 modifyConstr :: Int -> (Constr -> Constr) -> ElabState ()
 modifyConstr ref f = do
-  modify $ \env -> env {
+  Utils.modify $ \env -> env {
     constrs = env.constrs // [(ref, Just . f $ fromJust $ env.constrs ! ref)]
   }
 
@@ -97,17 +103,18 @@ isFree ref = do
 
 save' :: ElabState a -> ElabState a
 save' f = do
-  s <- gets bindings
+  s <- Utils.gets bindings
   a <- f
-  modify $ \env -> env { bindings = s }
+  Utils.modify $ \env -> env { bindings = s }
   pure a
 
 save'' :: ElabState a -> ElabState a
 save'' f = do
-  s <- gets typeBindings
+  s <- Utils.gets typeBindings
   a <- f
-  modify $ \env -> env { typeBindings = s }
+  Utils.modify $ \env -> env { typeBindings = s }
   pure a
+
 
 simpleEval :: [(Int, TypeTerm)] -> TypeTerm -> ElabState TypeTerm
 simpleEval bds = \case
@@ -131,3 +138,27 @@ simpleEval bds = \case
     <*> simpleEval ((ref, ty):bds) body
   TFix n -> pure $ TVar n
   THole -> pure THole
+
+
+data Constr = Constr { tops :: [TypeTerm], bots :: [TypeTerm], locked :: Bool }
+  deriving (Show)
+
+pushTop :: TypeTerm -> Constr -> Constr
+pushTop t c = c { tops = t:tops c }
+
+pushBot :: TypeTerm -> Constr -> Constr
+pushBot t c = c { bots = t:bots c }
+
+newConstr :: Constr
+newConstr = Constr [] [] False
+
+newConstr' :: Constr
+newConstr' = Constr [] [] True
+
+lock :: Constr -> Constr
+lock c = c { locked = True }
+
+type ConstrEnv = Array Int (Maybe Constr)
+
+initialConstrEnv :: ConstrEnv
+initialConstrEnv = array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]]

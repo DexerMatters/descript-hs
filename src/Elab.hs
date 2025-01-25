@@ -4,15 +4,16 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE LambdaCase #-}
 
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
 module Elab where
 
 import           Syn
 import           ElabUtils
-import           Utils (gets, throw, tr)
+import           Utils (gets, throw, modify)
 import           Control.Monad
 import           Data.Bifunctor (second)
-import           Data.Maybe (fromJust, isJust, fromMaybe)
-import           Debug.Trace (traceM)
+import           Data.Maybe (fromJust)
 import           Data.Foldable (for_)
 
 data ElabResult = ElabResult { ety :: TypeTerm, ehls :: [Int] }
@@ -38,7 +39,17 @@ elaborate (Lit literal) = case literal of
 elaborate (Var name) = do
   bindings <- gets bindings
   case lookup name bindings of
-    Just ty -> just ty
+    Just (Elaborated ty) -> just ty
+    Just (Unelaborated expr) -> do
+      elab <- elaborate expr
+      let new_bds = map
+            (\(n, e) -> if n == name
+                        then (n, Elaborated (ety elab))
+                        else (n, e))
+            bindings
+      modify $ \env -> env { bindings = new_bds }
+      pure elab
+    Just (ElaborationError err) -> throw err
     Nothing -> throw $ UnboundVariable name
 elaborate (Tuple exprs) = do
   results <- mapM elaborate exprs
@@ -50,7 +61,7 @@ elaborate (Record fields) = do
   let inferred = TRecord $ map (second ety) results
   let holes = concatMap (ehls . snd) results
   withHoles inferred holes
-elaborate Fun { args, ret_type, body } = do
+elaborate (Fun args ret_type body) = do
   -- Infer the type of the pattern
   results <- mapM inferPattern args
   let arg_types = map pty results
@@ -69,7 +80,7 @@ elaborate Fun { args, ret_type, body } = do
   forM_ holes $ \ref -> modifyConstr ref lock
   if null holes
     then just (TArrow arg_types ret_ty)
-    else just $ tr (TLam holes $ TArrow arg_types ret_ty)
+    else just (TLam holes $ TArrow arg_types ret_ty)
 elaborate (App f args) = do
   -- Infer the types and holes of the function and arguments
   ElabResult f_type f_holes <- elaborate f
@@ -159,7 +170,7 @@ elaborate (Proj expr label) = do
         _ -> throw $ CannotBeProjected rcd_type label
   (inferred, holes) <- reduce expr_ty
   withHoles inferred (expr_holes ++ holes)
-elaborate (Let { pat, rhs, body }) = do
+elaborate (Let pat rhs body) = do
   -- Check the type of the right-hand side
   ElabResult rhs_ty rhs_holes <- elaborate rhs
   PatternResult _ pbindings _ <- checkPattern pat rhs_ty
@@ -172,24 +183,25 @@ elaborate (Let { pat, rhs, body }) = do
 elaborate (TypeAlias { name, poly, ty, body }) = case poly of
   Nothing   -> do
     ref <- newTypeVar
-    indexed_ty <- indexType (Just (name, ref)) [] ty
+    let indexed_ty = indexType (Just (name, ref)) [] ty
     ElabResult body_ty body_holes
       <- save'' $ newTypeBinding name indexed_ty >> elaborate body
-    indexed_body <- indexType Nothing [(name, ref)] body_ty
+    let indexed_body = indexType Nothing [(name, ref)] body_ty
     modifyConstr ref lock
     withHoles (TLet ref indexed_ty indexed_body) body_holes
   Just vars -> do
     refs <- mapM (const newTypeVar) vars
     ref <- newTypeVar
-    indexed_ty <- TLam refs <$> indexType (Just (name, ref)) (zip vars refs) ty
+    let indexed_ty = TLam refs
+          $ indexType (Just (name, ref)) (zip vars refs) ty
     ElabResult body_ty body_holes
       <- save'' $ newTypeBinding name indexed_ty >> elaborate body
     -- lock the holes
     forM_ (ref:refs) $ \ref -> modifyConstr ref lock
     -- index the type
-    indexed_body <- indexType Nothing [(name, ref)] body_ty
+    let indexed_body = indexType Nothing [(name, ref)] body_ty
     withHoles (TLet ref indexed_ty indexed_body) body_holes
-elaborate (If { cond, then_branch, else_branch }) = do
+elaborate (If cond then_branch else_branch) = do
   ElabResult cond_ty cond_holes <- elaborate cond
   ElabResult then_ty then_holes <- elaborate then_branch
   ElabResult else_ty else_holes <- elaborate else_branch
@@ -284,27 +296,24 @@ unify (TArrow args1 ret1) (TArrow args2 ret2) = do
   unify ret1 ret2
 unify _ _ = pure ()
 
-indexType
-  :: Maybe (String, Int) -> [(String, Int)] -> TypeTerm -> ElabState TypeTerm
+indexType :: Maybe (String, Int) -> [(String, Int)] -> TypeTerm -> TypeTerm
 indexType self bds = \case
   TFree s
-    | Just s == fmap fst self -> pure $ TFix $ snd (fromJust self)
-  TFree s -> case lookup s (tr bds) of
-    Just i  -> pure $ TVar i
-    Nothing -> pure $ TFree s
-  TTuple tys -> TTuple <$> mapM (indexType self bds) tys
-  TRecord tys -> TRecord
-    <$> mapM (\(name, ty) -> (name, ) <$> indexType self bds ty) tys
-  TArrow args ret -> TArrow <$> mapM (indexType self bds) args
-    <*> indexType self bds ret
-  TLam holes ty -> TLam holes <$> indexType self bds ty
-  TApp ty args inputs -> TApp <$> indexType self bds ty
-    <*> pure args
-    <*> mapM (indexType self bds) inputs
-  TSeq tys -> TSeq <$> mapM (indexType self bds) tys
+    | Just s == fmap fst self -> TFix $ snd (fromJust self)
+  TFree s -> case lookup s bds of
+    Just i  -> TVar i
+    Nothing -> TFree s
+  TTuple tys -> TTuple $ map (indexType self bds) tys
+  TRecord tys -> TRecord $ map (second (indexType self bds)) tys
+  TArrow args ret
+    -> TArrow (map (indexType self bds) args) (indexType self bds ret)
+  TLam holes ty -> TLam holes $ indexType self bds ty
+  TApp ty args inputs -> TApp (indexType self bds ty) args
+    $ map (indexType self bds) inputs
+  TSeq tys -> TSeq $ map (indexType self bds) tys
   TLet name ty body
-    -> TLet name <$> indexType self bds ty <*> indexType self bds body
-  ty -> pure ty
+    -> TLet name (indexType self bds ty) (indexType self bds body)
+  ty -> ty
 
 indexHoles :: TypeTerm -> ElabState (TypeTerm, [Int])
 indexHoles = \case

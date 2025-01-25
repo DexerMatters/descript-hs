@@ -9,34 +9,27 @@ module EvalTUtils where
 import           Syn
 import           Utils
 import qualified ElabUtils as Elab
-import           GHC.Arr ((!), Array, array, bounds, (//), assocs)
+import           GHC.Arr ((!), Array, array, (//), assocs)
 import           Data.Maybe (isJust)
-import           Control.Monad ((>=>))
+import           ElabUtils (Constr(..), ConstrEnv)
 
 data EvalTError = InadequateTypeArity TypeVal TypeVal
                 | UnboundTypeVariable Int
                 | UnboundTypeIdent String
+                | UnexpectedUndone
                 | AmbiguousTypeVariable Int
                 | BadConversion TypeVal TypeVal
                 | UnexpectedHole
   deriving (Show)
 
 data TypeVal = TVVar Int
-             | TVFix Int (Int -> EvalTState TypeVal)
+             | TVFix TLazy
              | TVPrimitive PrimitiveType
              | TVArrow [TypeVal] TypeVal
              | TVTuple [TypeVal]
              | TVRecord [(String, TypeVal)]
              | TVLam TClosure
-
-instance Show TypeVal where
-  show (TVVar n) = "TVVar " ++ show n
-  show (TVFix n _) = "TVFix " ++ show n ++ " <function>"
-  show (TVPrimitive p) = "TVPrimitive " ++ show p
-  show (TVArrow args ret) = "TVArrow " ++ show args ++ " " ++ show ret
-  show (TVTuple ts) = "TVTuple " ++ show ts
-  show (TVRecord rs) = "TVRecord " ++ show rs
-  show (TVLam c) = "TVLam " ++ show c
+  deriving (Show)
 
 data TypePretty = PttyVar String
                 | PttyPrimitive PrimitiveType
@@ -48,17 +41,32 @@ data TypePretty = PttyVar String
 
 type BindingEnv = Array Int (Maybe TypeVal)
 
-data EvalTEnv = EvalTEnv { constrs :: ConstrEnv
-                         , bindings :: BindingEnv
-                         , fresh :: Int
-                         , pttyBindings :: [(Int, String)]
-                         , ident :: Int
-                         , fixFlag :: Bool
-                         }
+data EvalTEnv =
+  EvalTEnv { constrs :: ConstrEnv
+           , bindings :: BindingEnv
+           , freeBindings :: [(String, EvalTStage)]
+           , fresh :: Int
+           , pttyBindings :: [(Int, String)]
+           , ident :: Int
+           , fixFlag :: Bool
+           }
 
 type EvalTState = MState EvalTEnv EvalTError
 
+data EvalTStage = Evaluated TypeVal
+                | Unevaluated TypeTerm
+                | EvaluationError EvalTError
+
+instance Show EvalTStage where
+  show :: EvalTStage -> String
+  show (Evaluated ty) = show ty
+  show (Unevaluated ty) = show ty
+  show (EvaluationError err) = show err
+
 data TClosure = TClosure [Int] EvalTEnv TypeTerm
+
+data TLazy = TLazy EvalTEnv TypeTerm
+  deriving (Show)
 
 instance Show EvalTEnv where
   show :: EvalTEnv -> String
@@ -76,7 +84,14 @@ instance Show TClosure where
 
 fromElabEnv :: Elab.ElabEnv -> EvalTEnv
 fromElabEnv Elab.ElabEnv { Elab.constrs = c } =
-  EvalTEnv c (array (bounds c) [(i, Nothing) | i <- [0 .. 1024]]) 0 [] 1 False
+  EvalTEnv { constrs = c
+           , bindings = array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]]
+           , freeBindings = []
+           , fresh = 0
+           , pttyBindings = []
+           , ident = 0
+           , fixFlag = False
+           }
 
 newBinding :: Int -> TypeVal -> EvalTState ()
 newBinding n ty = modify
@@ -127,7 +142,7 @@ getBots n = do
 
 lookupFresh :: Int -> EvalTState String
 lookupFresh n =
-  let idents = map (:[]) ['S' .. 'Z']
+  let idents = map (:[]) ['T' .. 'Z']
   in do
        bs <- gets pttyBindings
        case lookup n bs of

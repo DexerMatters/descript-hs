@@ -5,21 +5,29 @@ module EvalT where
 
 import           Syn (TypeTerm(..))
 import           EvalTUtils hiding (ident)
-import           Utils (throw, all', put, save, get, tr, gets, MState(runMState)
-                      , modify)
+import           Utils (throw, all', put, save, get, gets, modify)
 import           Control.Monad
-import           Debug.Trace (traceM)
 import           Data.List (intercalate)
 import           GHC.Base (Alternative((<|>)))
-import           ElabUtils (ElabState)
 
 evalT :: TypeTerm -> EvalTState TypeVal
 evalT (TVar n) = lookupBinding' n
-evalT (TFree s) = throw $ UnboundTypeIdent s
-evalT (TFix n) = do
-  traceM $ "Fixing " ++ show n
-  get >>= traceM . show
-  pure (TVFix n lookupBinding')
+evalT (TFree s) = do
+  tbds <- gets freeBindings
+  case lookup s tbds of
+    Just (Evaluated ty) -> pure ty
+    Just (Unevaluated ty) -> do
+      eval <- evalT ty
+      let new_bds = map
+            (\(s', ty') -> if s == s'
+                           then (s', Evaluated eval)
+                           else (s', ty'))
+            tbds
+      modify $ \env -> env { freeBindings = new_bds }
+      pure eval
+    Just (EvaluationError err) -> throw err
+    Nothing -> throw $ UnboundTypeIdent s
+evalT (TFix n) = get >>= \env -> pure $ TVFix (TLazy env (TVar n))
 evalT (TPrimitive p) = pure $ TVPrimitive p
 evalT (TArrow args ret) = TVArrow <$> mapM evalT args <*> evalT ret
 evalT (TTuple ts) = TVTuple <$> mapM evalT ts
@@ -53,13 +61,8 @@ evalT (TApp lam [] inputs) = do
             $ put env >> zipWithM_ newBinding refs input_types >> evalT body
             >>= exact
         TVVar x -> exact (TVVar x) >>= reduce
-        fix@(TVFix n f) -> do
-          traceM $ "Applying fix " ++ show n
-          flag <- gets fixFlag
-          if flag
-            then modify (\env -> env { fixFlag = False }) >> unfold fix
-              >>= reduce
-            else pure $ TVFix n f
+        TVFix (TLazy _ term) -> get
+          >>= \env -> pure $ TVFix $ TLazy env (TApp term [] inputs)
         _ -> error "Impossible"
   result <- evalT lam >>= reduce
   modify $ \env -> env { fixFlag = False }
@@ -193,13 +196,13 @@ exact (TVTuple ts) = TVTuple <$> mapM exact ts
 exact (TVRecord fields) = TVRecord
   <$> mapM (\(name, ty) -> (name, ) <$> exact ty) fields
 exact (TVArrow args ret) = TVArrow <$> mapM exact args <*> exact ret
-exact (TVFix n f) = unfold (TVFix n f)
+exact (TVFix fix) = pure $ TVFix fix
 exact ty = pure ty
 
 pretty :: TypeVal -> EvalTState String
 pretty (TVPrimitive p) = pure $ show p
 pretty (TVVar ref) = lookupFresh ref
-pretty (TVFix _ _) = pure "..."
+pretty (TVFix _) = pure "..."
 pretty (TVTuple ts) = do
   ts' <- mapM pretty ts
   pure $ "(" ++ intercalate ", " ts' ++ ")"
@@ -217,15 +220,8 @@ pretty (TVLam cls@(TClosure refs _ _)) = do
   ret' <- block $ pretty ret
   pure $ "forall<" ++ intercalate ", " args' ++ ">. " ++ ret'
 
-unfold :: TypeVal -> EvalTState TypeVal
-unfold (TVFix n f) = f n
-  >>= \case
-    TVFix n' _
-      | n == n' -> f n
-    TVVar n'
-      | n == n' -> pure $ TVFix n f
-    TVArrow args ret -> TVArrow <$> mapM unfold args <*> unfold ret
-    TVTuple ts -> TVTuple <$> mapM unfold ts
-    TVRecord rs -> TVRecord <$> mapM (\(name, ty) -> (name, ) <$> unfold ty) rs
-    ty -> pure ty
-unfold ty = pure ty
+strict :: TLazy -> EvalTState TypeVal
+strict (TLazy env term) = save
+  $ do
+    put env
+    evalT term

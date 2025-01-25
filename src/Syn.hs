@@ -1,3 +1,4 @@
+
 module Syn where
 
 import           GHC.Arr (Array, array)
@@ -59,12 +60,24 @@ instance Show TypeTerm where
   show (TLet s t1 t2) =
     "let %" ++ show s ++ ": " ++ show t1 ++ " in " ++ show t2
   show THole = "_"
-  show TFix {} = "fix"
+  show (TFix n) = "fix " ++ show n
 
 data Literal = LInt Int
              | LBool Bool
              | LUnit
              | LString String
+  deriving (Show)
+
+data Statement =
+    -- | function f(x1, x2, ..., xn) { body }
+    -- | function f(x1, x2, ..., xn): t { body }
+    FunDecl String [Pattern] (Maybe TypeTerm) ExprTerm
+    -- | let x = e
+    -- | let x: t = e
+  | LetDecl String (Maybe TypeTerm) ExprTerm
+    -- | type t = t'
+    -- | type t<x1, x2, ..., xn> = t'
+  | TypeDecl String (Maybe [String]) TypeTerm
   deriving (Show)
 
 data ExprTerm =
@@ -78,19 +91,21 @@ data ExprTerm =
   | Record [(String, ExprTerm)]
     -- | e.l
   | Proj ExprTerm String
-    -- | (e1, e2, ..., en) => ret_type { body }
-  | Fun { args :: [Pattern], ret_type :: Maybe TypeTerm, body :: ExprTerm }
-    -- | f(e1, e2, ..., en)
+    -- | (e1, e2, ..., en) => e
+    -- | (e1, e2, ..., en) t => e
+  | Fun [Pattern] (Maybe TypeTerm) ExprTerm
+    -- | e1(e2, e3, ..., en)
   | App ExprTerm [ExprTerm]
-    -- | let pat: t = rhs; body
-  | Let { pat :: Pattern, rhs :: ExprTerm, body :: ExprTerm }
-    -- | if (cond) then_branch else else_branch
-  | If { cond :: ExprTerm, then_branch :: ExprTerm, else_branch :: ExprTerm }
+    -- | let x = e1; e2
+  | Let Pattern ExprTerm ExprTerm
+    -- | if (e1) e2 else e3
+  | If ExprTerm ExprTerm ExprTerm
     -- | { e1; e2; ...; en }
   | Seq [ExprTerm]
     -- | keyword e
   | Keyword String (Either ExprTerm TypeTerm)
-    -- | type t = t'
+    -- | type t = t'; body
+    -- | type t<x1, x2, ..., xn> = t'; body
   | TypeAlias { name :: String
               , poly :: Maybe [String]
               , ty :: TypeTerm
@@ -98,22 +113,3 @@ data ExprTerm =
               }
   deriving (Show)
 
-data Constr = Constr { tops :: [TypeTerm], bots :: [TypeTerm], locked :: Bool }
-  deriving (Show)
-
-pushTop :: TypeTerm -> Constr -> Constr
-pushTop t c = c { tops = t:tops c }
-
-pushBot :: TypeTerm -> Constr -> Constr
-pushBot t c = c { bots = t:bots c }
-
-newConstr :: Constr
-newConstr = Constr [] [] False
-
-lock :: Constr -> Constr
-lock c = c { locked = True }
-
-type ConstrEnv = Array Int (Maybe Constr)
-
-initialConstrEnv :: ConstrEnv
-initialConstrEnv = array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]]

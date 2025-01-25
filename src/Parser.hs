@@ -3,9 +3,9 @@
 module Parser where
 
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
-                                , sepBy, MonadParsec(try), optional)
+                                , sepBy, MonadParsec(try, eof), optional)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
-                    , PrimitiveType(..))
+                    , PrimitiveType(..), Statement(..))
 import           GHC.Base (Alternative(..))
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
@@ -50,6 +50,33 @@ parseLiteral = choice
   , LBool False <$ symbol "false"
   , LUnit <$ string "unit"
   , LString <$> lexeme (char '"' *> manyTill anySingle (char '"'))]
+
+-- | Top-level parser
+
+parseProgram :: Parser [Statement]
+parseProgram = manyTill parseStatement eof
+
+-- | Statement parser
+
+parseStatement :: Parser Statement
+parseStatement = choice [parseFunDecl, parseLetDecl, parseTypeDecl]
+
+parseFunDecl :: Parser Statement
+parseFunDecl = FunDecl <$> (symbol "function" *> ident)
+  <*> between (symbol "(") (symbol ")") (parsePattern 0 `sepBy` symbol ",")
+  <*> optional (symbol ":" *> parseTypeTerm 0)
+  <*> (symbol "{" *> allowedAll <* symbol "}")
+
+parseLetDecl :: Parser Statement
+parseLetDecl = LetDecl <$> (symbol "let" *> ident)
+  <*> optional (symbol ":" *> parseTypeTerm 0)
+  <*> (symbol "=" *> allowedBody)
+
+parseTypeDecl :: Parser Statement
+parseTypeDecl = TypeDecl <$> (symbol "type" *> typeIdent)
+  <*> optional
+    (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
+  <*> (symbol "=" *> parseTypeTerm 0)
 
 -- | Expression parser
 
