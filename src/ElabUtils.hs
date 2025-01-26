@@ -36,6 +36,7 @@ data ElabStage = Elaborated TypeTerm | Unelaborated ExprTerm | ElaborationError 
 instance Show ElabStage where
   show (Elaborated ty) = show ty
   show (Unelaborated expr) = show expr
+  show (ElaborationError err) = show err
 
 type ElabState = Utils.MState ElabEnv ElabError
 

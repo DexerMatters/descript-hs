@@ -5,7 +5,7 @@ module Parser where
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
                                 , sepBy, MonadParsec(try, eof), optional)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
-                    , PrimitiveType(..), Statement(..))
+                    , PrimitiveType(..), Statement(..), BinOp(..))
 import           GHC.Base (Alternative(..))
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
@@ -50,6 +50,9 @@ parseLiteral = choice
   , LBool False <$ symbol "false"
   , LUnit <$ string "unit"
   , LString <$> lexeme (char '"' *> manyTill anySingle (char '"'))]
+
+binOp :: BinOp -> ExprTerm -> ExprTerm -> ExprTerm
+binOp op a b = App (Var (binOpName op)) [a, b]
 
 -- | Top-level parser
 

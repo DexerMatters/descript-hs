@@ -4,7 +4,7 @@
 module EvalT where
 
 import           Syn (TypeTerm(..))
-import           EvalTUtils hiding (ident)
+import           EvalTUtils hiding (bots, ident)
 import           Utils (throw, all', put, save, get, gets, modify)
 import           Control.Monad
 import           Data.List (intercalate)
@@ -140,13 +140,13 @@ TVVar ref <: rhs = do
   -- rhs is more general than the TVVar, which means 
   -- rhs has to be more general than the bots
 
-  bots <- getBots ref >>= mapM evalT
+  bots <- getBots evalT ref
   bot_res <- mapM (rhs <:) bots
   pure $ all' bot_res
 lhs <: TVVar ref = do
   -- lhs is more specific than the TVVar, which means
   -- lhs has to be more specific than the tops
-  tops <- getTops ref >>= mapM evalT
+  tops <- getTops evalT ref
   top_res <- mapM (<: lhs) tops
   pure $ all' top_res
 TVLam cls@(TClosure ref _ _) <: ty = do
@@ -176,8 +176,8 @@ deduce refs ty (TVLam cls@(TClosure refs' _ _)) = do
   deduce (refs ++ refs') ty ret
 deduce refs input_type (TVVar ref) = do
   when (ref `elem` refs) $ newBinding ref input_type
-  getTops ref >>= mapM evalT >>= mapM_ (deduce refs input_type)
-  getBots ref >>= mapM evalT >>= mapM_ (deduce refs input_type)
+  getTops evalT ref >>= mapM_ (deduce refs input_type)
+  getBots evalT ref >>= mapM_ (deduce refs input_type)
 deduce refs (TVTuple ts) (TVTuple ts') = do
   zipWithM_ (deduce refs) ts ts'
 deduce refs a@(TVRecord fields) b@(TVRecord fields') = do

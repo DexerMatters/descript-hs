@@ -1,15 +1,5 @@
-let number = 12
-
-let string = "hello"
-
-function makePair(a:int, b:int) {
-  (a, b)
+let test1 = {
+  type Pair<A, B> = (A, B);
+  let first = ((a, b):Pair<?, ?>) => a;
+  first((12, "ddd"))
 }
-
-function id(a) { a }
-
-function makePair1(a, b) { 
-  makePair(a, b)
-}
-
-function apply(f, a) { f(a) }

@@ -7,9 +7,8 @@ import           Syn (Statement(..), TypeTerm(TLam), ExprTerm(Fun))
 import           ElabUtils (ElabStage(..), ElabError, ElabEnv(ElabEnv))
 import           EvalTUtils (EvalTStage(Unevaluated, Evaluated, EvaluationError)
                            , TypeVal, EvalTError, EvalTEnv(EvalTEnv))
-import           Control.Monad.State (State, modify, gets, execState, runState
-                                    , evalState)
-import           GHC.Arr ((//), array)
+import           Control.Monad.State (State, modify, gets, evalState)
+import           GHC.Arr ((//), array, Array, (!))
 import qualified ElabUtils as Elab
 import qualified Elab
 import           Utils (MState(runMState), success, fatal, info, tr, warn)
@@ -18,6 +17,7 @@ import           Data.Traversable (forM)
 import qualified EvalT
 import qualified EvalTUtils as EvalT
 import           Debug.Trace (traceM)
+import           Data.Maybe (fromJust)
 
 data Context = Context { valBindings :: [(String, ElabStage)]
                        , tyBindings :: [(String, EvalTStage)]
@@ -82,6 +82,7 @@ genElabEnv = do
   tyBindings' <- gets tyBindings
   valBindings' <- gets valBindings
   counter' <- gets counter
+  traceM $ "Counter: " ++ show counter'
   constrs <- gets constraints
   let typeBindings = do
         (name, Unevaluated ty) <- tyBindings'
@@ -89,12 +90,19 @@ genElabEnv = do
   return $ ElabEnv counter' valBindings' typeBindings constrs
 
 genEvalTEnv :: ElabEnv -> TypingState EvalTEnv
-genEvalTEnv Elab.ElabEnv { Elab.constrs = c } = do
+genEvalTEnv Elab.ElabEnv { Elab.constrs = c, Elab.counter = count } = do
+  traceM $ show c
   tyBindings' <- gets tyBindings
+  let constr' = array (0, count - 1)
+        $ do
+          i' <- [0 .. count - 1]
+          Elab.Constr tops bots _ <- fromJust <$> [c ! i']
+          let x = EvalT.Constr' (Left tops) (Left bots)
+          return (i', x)
   return
     $ EvalTEnv
-      c
-      (array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]])
+      constr'
+      (array (0, 1024) [(i', Nothing) | i' <- [0 .. 1024]])
       tyBindings'
       0
       []
@@ -125,12 +133,14 @@ elabProgram i = gets (length . valBindings)
             case runMState (elaborate term) elabEnv of
               Left err -> putValBinding name (ElaborationError err)
               Right (Elab.ElabResult ty _, env) -> do
-                traceM $ "Elaborated " ++ name ++ " to " ++ show ty
                 let elabEnv' = Elab.bindings env
                 let constrs = Elab.constrs env
+                let counter' = Elab.counter env
                 modify
-                  $ \ctx
-                  -> ctx { valBindings = elabEnv', constraints = constrs }
+                  $ \ctx -> ctx { valBindings = elabEnv'
+                                , constraints = constrs
+                                , counter = counter'
+                                }
                 putValBinding name (Elaborated ty)
                 elabProgram (i + 1)
           (_, ElaborationError err) -> do

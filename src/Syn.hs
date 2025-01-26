@@ -4,6 +4,32 @@ module Syn where
 import           GHC.Arr (Array, array)
 import           Data.List (intercalate)
 
+data BinOp = BinOp { binOpName :: String
+                   , binOpSign :: String
+                   , binOpPrec :: Int
+                   , binOpAssoc :: Assoc
+                   }
+  deriving (Show)
+
+data Assoc = AssocLeft
+           | AssocRight
+           | AssocNone
+  deriving (Eq, Show)
+
+operatorTable :: [BinOp]
+operatorTable =
+  [ BinOp "&&" "and" 1 AssocLeft
+  , BinOp "||" "or" 2 AssocLeft
+  , BinOp "<" "lt" 3 AssocNone
+  , BinOp "<=" "le" 3 AssocNone
+  , BinOp ">" "gt" 3 AssocNone
+  , BinOp ">=" "ge" 3 AssocNone
+  , BinOp "+" "add" 4 AssocLeft
+  , BinOp "-" "sub" 4 AssocLeft
+  , BinOp "*" "mul" 5 AssocLeft
+  , BinOp "/" "div" 5 AssocLeft
+  , BinOp "%" "mod" 5 AssocLeft]
+
 data Pattern = PAtom String
              | PTuple [Pattern]
              | PRecord [(String, Pattern)]

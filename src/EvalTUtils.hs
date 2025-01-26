@@ -11,7 +11,6 @@ import           Utils
 import qualified ElabUtils as Elab
 import           GHC.Arr ((!), Array, array, (//), assocs)
 import           Data.Maybe (isJust)
-import           ElabUtils (Constr(..), ConstrEnv)
 
 data EvalTError = InadequateTypeArity TypeVal TypeVal
                 | UnboundTypeVariable Int
@@ -42,7 +41,7 @@ data TypePretty = PttyVar String
 type BindingEnv = Array Int (Maybe TypeVal)
 
 data EvalTEnv =
-  EvalTEnv { constrs :: ConstrEnv
+  EvalTEnv { constrs :: Array Int Constr'
            , bindings :: BindingEnv
            , freeBindings :: [(String, EvalTStage)]
            , fresh :: Int
@@ -82,17 +81,6 @@ instance Show TClosure where
   show :: TClosure -> String
   show (TClosure refs _ ty) = "<" ++ show refs ++ " " ++ show ty ++ ">"
 
-fromElabEnv :: Elab.ElabEnv -> EvalTEnv
-fromElabEnv Elab.ElabEnv { Elab.constrs = c } =
-  EvalTEnv { constrs = c
-           , bindings = array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]]
-           , freeBindings = []
-           , fresh = 0
-           , pttyBindings = []
-           , ident = 0
-           , fixFlag = False
-           }
-
 newBinding :: Int -> TypeVal -> EvalTState ()
 newBinding n ty = modify
   $ \env -> env { bindings = bindings env // [(n, Just ty)] }
@@ -126,19 +114,35 @@ existBinding ref = (\case
   . (! ref)
   <$> gets bindings
 
-getTops :: Int -> EvalTState [TypeTerm]
-getTops n = do
+getTops :: (TypeTerm -> MState EvalTEnv EvalTError TypeVal)
+        -> Int
+        -> EvalTState [TypeVal]
+getTops f n = do
   EvalTEnv { constrs } <- get
-  case constrs ! n of
-    Just (Constr tops _ _) -> pure tops
-    Nothing -> throw $ UnboundTypeVariable n
+  case tops $ constrs ! n of
+    Right ts -> pure ts
+    Left ts  -> do
+      ts' <- mapM f ts
+      modify
+        $ \env -> env { constrs = constrs
+                          // [(n, Constr' (Right ts') (bots $ constrs ! n))]
+                      }
+      pure ts'
 
-getBots :: Int -> EvalTState [TypeTerm]
-getBots n = do
+getBots :: (TypeTerm -> MState EvalTEnv EvalTError TypeVal)
+        -> Int
+        -> EvalTState [TypeVal]
+getBots f n = do
   EvalTEnv { constrs } <- get
-  case constrs ! n of
-    Just (Constr _ bots _) -> pure bots
-    Nothing -> throw $ UnboundTypeVariable n
+  case bots $ constrs ! n of
+    Right ts -> pure ts
+    Left ts  -> do
+      ts' <- mapM f ts
+      modify
+        $ \env -> env { constrs = constrs
+                          // [(n, Constr' (tops $ constrs ! n) (Right ts'))]
+                      }
+      pure ts'
 
 lookupFresh :: Int -> EvalTState String
 lookupFresh n =
@@ -166,4 +170,7 @@ makeIndent = do
   n <- gets ident
   pure $ replicate n '\t'
 
-
+data Constr' = Constr' { tops :: Either [TypeTerm] [TypeVal]
+                       , bots :: Either [TypeTerm] [TypeVal]
+                       }
+  deriving (Show)
