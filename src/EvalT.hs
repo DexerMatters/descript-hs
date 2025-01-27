@@ -216,9 +216,11 @@ pretty (TVArrow args ret) = do
 pretty (TVLam cls@(TClosure refs _ _)) = do
   let args = map TVVar refs
   args' <- mapM pretty args
+  bots <- mapM (getBots evalT >=> mapM pretty >=> pure . intercalate "+") refs
+  let args'' = zipWith (\arg bot -> arg ++ ":" ++ bot) args' bots
   ret <- cls $$ args
   ret' <- block $ pretty ret
-  pure $ "forall<" ++ intercalate ", " args' ++ ">. " ++ ret'
+  pure $ "forall<" ++ intercalate ", " args'' ++ ">. " ++ ret'
 
 strict :: TLazy -> EvalTState TypeVal
 strict (TLazy env term) = save

@@ -3,13 +3,17 @@ module Syn where
 
 import           GHC.Arr (Array, array)
 import           Data.List (intercalate)
+import           GHC.Base (maxInt)
 
-data BinOp = BinOp { binOpName :: String
-                   , binOpSign :: String
+data BinOp = BinOp { binOpSign :: String
+                   , binOpName :: String
                    , binOpPrec :: Int
                    , binOpAssoc :: Assoc
                    }
-  deriving (Show)
+  deriving (Eq)
+
+instance Show BinOp where
+  show = binOpSign
 
 data Assoc = AssocLeft
            | AssocRight
@@ -28,7 +32,9 @@ operatorTable =
   , BinOp "-" "sub" 4 AssocLeft
   , BinOp "*" "mul" 5 AssocLeft
   , BinOp "/" "div" 5 AssocLeft
-  , BinOp "%" "mod" 5 AssocLeft]
+  , BinOp "%" "mod" 5 AssocLeft
+    -- Most precedence
+  , BinOp "EOT" "EOT" maxInt AssocNone]
 
 data Pattern = PAtom String
              | PTuple [Pattern]
@@ -137,5 +143,7 @@ data ExprTerm =
               , ty :: TypeTerm
               , body :: ExprTerm
               }
+    -- Special cases
+  | Native
   deriving (Show)
 

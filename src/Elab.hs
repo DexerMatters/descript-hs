@@ -61,6 +61,15 @@ elaborate (Record fields) = do
   let inferred = TRecord $ map (second ety) results
   let holes = concatMap (ehls . snd) results
   withHoles inferred holes
+elaborate (Fun args (Just ret_type) Native) = do
+  results <- mapM inferPattern args
+  let arg_types = map pty results
+  let arg_holes = concatMap phls results
+  let holes = arg_holes
+  forM_ holes $ \ref -> modifyConstr ref lock
+  if null holes
+    then just (TArrow arg_types ret_type)
+    else just (TLam holes $ TArrow arg_types ret_type)
 elaborate (Fun args ret_type body) = do
   -- Infer the type of the pattern
   results <- mapM inferPattern args
@@ -218,6 +227,7 @@ elaborate (Seq exprs) = do
   withHoles inferred holes
 elaborate (Keyword "check" (Right ty)) = pure $ ElabResult ty []
 elaborate (Keyword _ _) = error "Impossible"
+elaborate Native = error "Impossible"
 
 inferPattern :: Pattern -> ElabState PatternResult
 inferPattern (PAtom x) = do

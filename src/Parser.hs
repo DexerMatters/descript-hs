@@ -5,18 +5,32 @@ module Parser where
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
                                 , sepBy, MonadParsec(try, eof), optional)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
-                    , PrimitiveType(..), Statement(..), BinOp(..))
-import           GHC.Base (Alternative(..))
+                    , PrimitiveType(..), Statement(..), BinOp(..), operatorTable
+                    , Assoc(..))
+import           GHC.Base (Alternative(..), maxInt)
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import           Data.Void (Void)
 import           Data.Functor (($>))
+import           Data.Foldable (maximumBy, minimumBy)
+import           Utils (tr)
+import           Debug.Trace (traceM, trace)
+import           Data.Traversable (for)
+import           Text.Megaparsec.Debug (MonadParsecDbg(dbg))
 
 type Parser = Parsec Void String
 
 preserved :: [String]
-preserved =
-  ["true", "false", "int", "bool", "if", "else", "let", "function", "check"]
+preserved = [ "true"
+            , "false"
+            , "int"
+            , "bool"
+            , "if"
+            , "else"
+            , "let"
+            , "function"
+            , "check"
+            , "native"]
 
 ws :: Parser ()
 ws = L.space space1 (L.skipLineComment "//") (L.skipBlockComment "/*" "*/")
@@ -68,7 +82,8 @@ parseFunDecl :: Parser Statement
 parseFunDecl = FunDecl <$> (symbol "function" *> ident)
   <*> between (symbol "(") (symbol ")") (parsePattern 0 `sepBy` symbol ",")
   <*> optional (symbol ":" *> parseTypeTerm 0)
-  <*> (symbol "{" *> allowedAll <* symbol "}")
+  <*> ((symbol "-- native" $> Native)
+       <|> (symbol "{" *> allowedAll <* symbol "}"))
 
 parseLetDecl :: Parser Statement
 parseLetDecl = LetDecl <$> (symbol "let" *> ident)
@@ -97,6 +112,13 @@ parseTuple = do
 
 parseLiteralExpr :: Parser ExprTerm
 parseLiteralExpr = Lit <$> parseLiteral
+
+parseBinaryOp :: BinOp -> Parser ExprTerm
+parseBinaryOp op = sepBy2 allowedArith (symbol $ binOpSign op)
+  >>= \case
+    [x]    -> pure x
+    (x:xs) -> pure $ foldl (binOp op) x xs
+    _      -> fail "impossible"
 
 parseRecord :: Parser ExprTerm
 parseRecord = Record
@@ -247,23 +269,29 @@ allExpr = try
       , parseRecord     -- 6
       , parseTuple      -- 7
       , parseProj       -- 8
-      , parseApp        -- 9
-      , parseLiteralExpr -- 10
-      , parseVariable  -- 11
-      , parseParen     -- 12
+      , parseBinaryOp (operatorTable !! 6)   -- 9
+      , parseApp        -- 10
+      , parseLiteralExpr -- 11
+      , parseVariable  -- 12
+      , parseParen     -- 13
       ]
 
 allowedInArg :: Parser ExprTerm
-allowedInArg = choice $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+allowedInArg = choice
+  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 allowedProj :: Parser ExprTerm
-allowedProj = choice $ (allExpr !!) <$> [3, 6, 7, 10, 11, 12]
+allowedProj = choice $ (allExpr !!) <$> [3, 6, 7, 11, 12, 13]
 
 allowedApp :: Parser ExprTerm
-allowedApp = choice $ (allExpr !!) <$> [3, 6, 7, 10, 11, 12]
+allowedApp = choice $ (allExpr !!) <$> [3, 6, 7, 11, 12, 13]
 
 allowedBody :: Parser ExprTerm
-allowedBody = choice $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+allowedBody = choice
+  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+allowedArith :: Parser ExprTerm
+allowedArith = choice $ (allExpr !!) <$> [3, 6, 7, 8, 10, 11, 12, 13]
 
 allowedAll :: Parser ExprTerm
 allowedAll = choice allExpr

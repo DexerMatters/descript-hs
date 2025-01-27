@@ -113,3 +113,6 @@ info s = "\x1b[34m" ++ s ++ "\x1b[0m"
 
 success :: String -> String
 success s = "\x1b[32m" ++ s ++ "\x1b[0m"
+
+trival :: String -> String
+trival s = "\x1b[36m" ++ s ++ "\x1b[0m"

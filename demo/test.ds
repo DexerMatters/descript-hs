@@ -1,5 +1,5 @@
-let test1 = {
-  type Pair<A, B> = (A, B);
-  let first = ((a, b):Pair<?, ?>) => a;
-  first((12, "ddd"))
+function add(lhs:int, rhs:int):int -- native
+
+function test(a, b) {
+  a.val + b.val
 }
