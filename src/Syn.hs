@@ -1,7 +1,5 @@
-
 module Syn where
 
-import           GHC.Arr (Array, array)
 import           Data.List (intercalate)
 import           GHC.Base (maxInt)
 
@@ -47,6 +45,7 @@ data PrimitiveType = PrimInt
                    | PrimBool
                    | PrimUnit
                    | PrimString
+                   | PrimNewType String
   deriving (Eq)
 
 instance Show PrimitiveType where
@@ -54,6 +53,7 @@ instance Show PrimitiveType where
   show PrimBool = "bool"
   show PrimUnit = "()"
   show PrimString = "str"
+  show (PrimNewType s) = s
 
 data TypeTerm =
     TVar Int                     -- x
@@ -67,17 +67,13 @@ data TypeTerm =
     -- Intermediate types
   | TFix Int
   | TConv TypeTerm TypeTerm
-  | TLam [Int] TypeTerm
+  | TLam Bool [Int] TypeTerm
   | TSeq [TypeTerm]
   | TLet Int TypeTerm TypeTerm
 
 instance Show TypeTerm where
   show (TVar x) = "%" ++ show x
-  show (TPrimitive l) = case l of
-    PrimBool   -> "bool"
-    PrimString -> "str"
-    PrimInt    -> "int"
-    PrimUnit   -> "()"
+  show (TPrimitive l) = show l
   show (TArrow tys ret) =
     "(" ++ intercalate "," (map show tys) ++ ") -> " ++ show ret
   show (TTuple tys) = "(" ++ intercalate "," (map show tys) ++ ")"
@@ -85,7 +81,7 @@ instance Show TypeTerm where
     "{" ++ intercalate "," (map (\(l, t) -> l ++ ": " ++ show t) fields) ++ "}"
   show (TApp t _ tys) = show t ++ "<" ++ intercalate "," (map show tys) ++ ">"
   show (TConv t1 t2) = show t1 ++ " => " ++ show t2
-  show (TLam xs t) =
+  show (TLam _ xs t) =
     "λ" ++ intercalate "," (map (\x -> "%" ++ show x) xs) ++ ". " ++ show t
   show (TSeq tys) = "{" ++ intercalate "," (map show tys) ++ "}"
   show (TFree s) = s
@@ -110,6 +106,8 @@ data Statement =
     -- | type t = t'
     -- | type t<x1, x2, ..., xn> = t'
   | TypeDecl String (Maybe [String]) TypeTerm
+    -- | enum t { c1, c2, ..., cn }
+  | EnumDecl String (Maybe [String]) [(String, [TypeTerm])]
   deriving (Show)
 
 data ExprTerm =
@@ -138,11 +136,7 @@ data ExprTerm =
   | Keyword String (Either ExprTerm TypeTerm)
     -- | type t = t'; body
     -- | type t<x1, x2, ..., xn> = t'; body
-  | TypeAlias { name :: String
-              , poly :: Maybe [String]
-              , ty :: TypeTerm
-              , body :: ExprTerm
-              }
+  | TypeAlias String (Maybe [String]) TypeTerm ExprTerm
     -- Special cases
   | Native
   deriving (Show)

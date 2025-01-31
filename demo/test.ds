@@ -1,5 +1,4 @@
-function add(lhs:int, rhs:int):int -- native
-
-function test(a, b) {
-  a.val + b.val
+enum Result<V, E> {
+  ok(V, int),
+  err(E)
 }

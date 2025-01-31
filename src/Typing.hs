@@ -3,8 +3,10 @@
 
 module Typing where
 
-import           Syn (Statement(..), TypeTerm(TLam), ExprTerm(Fun))
-import           ElabUtils (ElabStage(..), ElabError, ElabEnv(ElabEnv))
+import           Syn (Statement(..), TypeTerm(TLam, TPrimitive, TArrow)
+                    , ExprTerm(Fun), PrimitiveType(PrimNewType))
+import           ElabUtils (ElabStage(..), ElabError, ElabEnv(ElabEnv)
+                          , indexType, indexType')
 import           EvalTUtils (EvalTStage(Unevaluated, Evaluated, EvaluationError)
                            , TypeVal, EvalTError, EvalTEnv(EvalTEnv))
 import           Control.Monad.State (State, modify, gets, evalState)
@@ -12,12 +14,14 @@ import           GHC.Arr ((//), array, Array, (!))
 import qualified ElabUtils as Elab
 import qualified Elab
 import           Utils (MState(runMState), success, fatal, info, tr, warn)
-import           Elab (elaborate, indexType)
+import           Elab (elaborate)
 import           Data.Traversable (forM)
 import qualified EvalT
 import qualified EvalTUtils as EvalT
-import           Debug.Trace (traceM)
+import           Debug.Trace (traceM, trace)
 import           Data.Maybe (fromJust)
+import           Control.Monad (forM_)
+import           Data.List (nub)
 
 data Context = Context { valBindings :: [(String, ElabStage)]
                        , tyBindings :: [(String, EvalTStage)]
@@ -57,6 +61,13 @@ succ = do
   modify $ \ctx -> ctx { counter = counter' + 1 }
   return counter'
 
+newConstr :: Int -> TypingState ()
+newConstr ref = do
+  constrs <- gets constraints
+  modify
+    $ \ctx
+    -> ctx { constraints = constrs // [(ref, Just $ Elab.Constr [] [] True)] }
+
 addTypeBinding :: String -> TypeTerm -> TypingState ()
 addTypeBinding name ty = modify
   $ \ctx -> ctx { tyBindings = (name, Unevaluated ty):tyBindings ctx }
@@ -64,6 +75,10 @@ addTypeBinding name ty = modify
 addValBinding :: String -> ExprTerm -> TypingState ()
 addValBinding name term = modify
   $ \ctx -> ctx { valBindings = (name, Unelaborated term):valBindings ctx }
+
+addValBinding' :: String -> TypeTerm -> TypingState ()
+addValBinding' name ty = modify
+  $ \ctx -> ctx { valBindings = (name, Elaborated ty):valBindings ctx }
 
 putTypeBinding :: String -> EvalTStage -> TypingState ()
 putTypeBinding name ty = do
@@ -82,7 +97,6 @@ genElabEnv = do
   tyBindings' <- gets tyBindings
   valBindings' <- gets valBindings
   counter' <- gets counter
-  traceM $ "Counter: " ++ show counter'
   constrs <- gets constraints
   let typeBindings = do
         (name, Unevaluated ty) <- tyBindings'
@@ -91,12 +105,13 @@ genElabEnv = do
 
 genEvalTEnv :: ElabEnv -> TypingState EvalTEnv
 genEvalTEnv Elab.ElabEnv { Elab.constrs = c, Elab.counter = count } = do
-  traceM $ show c
   tyBindings' <- gets tyBindings
-  let constr' = array (0, count - 1)
+  let constr' = array (0, tr count - 1)
         $ do
           i' <- [0 .. count - 1]
-          Elab.Constr tops bots _ <- fromJust <$> [c ! i']
+          let Elab.Constr tops bots _ = case c ! i' of
+                Just x  -> x
+                Nothing -> Elab.Constr [] [] True
           let x = EvalT.Constr' (Left tops) (Left bots)
           return (i', x)
   return
@@ -112,13 +127,42 @@ genEvalTEnv Elab.ElabEnv { Elab.constrs = c, Elab.counter = count } = do
 initEnv :: [Statement] -> TypingState ()
 initEnv = mapM_
   $ \case
-    LetDecl name _ty term        -> addValBinding name term
-    FunDecl name pat ty term     -> addValBinding name (Fun pat ty term)
-    TypeDecl name Nothing ty     -> addTypeBinding name ty
+    LetDecl name _ty term -> addValBinding name term
+    FunDecl name pat ty term -> addValBinding name (Fun pat ty term)
+    TypeDecl name Nothing ty -> addTypeBinding name ty
     TypeDecl name (Just vars) ty -> do
       refs <- mapM (const Typing.succ) vars
       let indexed_ty = indexType Nothing (zip vars refs) ty
-      addTypeBinding name $ TLam refs indexed_ty
+      addTypeBinding name $ TLam False refs indexed_ty
+    EnumDecl name Nothing fields -> do
+      -- Add type binding for the new type
+      addTypeBinding name (TPrimitive $ PrimNewType name)
+      -- Add val bindings for each field
+      forM_ fields
+        $ \case
+          (x, [])  -> addValBinding' x (TPrimitive $ PrimNewType name)
+          (x, tys)
+            -> addValBinding' x (TArrow tys (TPrimitive $ PrimNewType name))
+    EnumDecl name (Just vars) fields -> do
+      -- Add type binding for the new type
+      refs <- mapM (const Typing.succ) vars
+      mapM_ newConstr refs
+      let proto = TLam True refs (TPrimitive $ PrimNewType name)
+      addTypeBinding name proto
+      -- Add val bindings for each field
+      forM_ fields
+        $ \case
+          (x, [])  -> addValBinding' x proto
+          (x, tys) -> do
+            let (indexed_tys, refs') = unzip
+                  $ map (indexType' Nothing (zip vars refs)) tys
+            traceM $ show indexed_tys ++ " " ++ show refs'
+            addValBinding'
+              x
+              (TLam
+                 True
+                 (nub $ concat refs')
+                 (TArrow indexed_tys (TPrimitive $ PrimNewType name)))
 
 elabProgram :: Int -> TypingState ()
 elabProgram i = gets (length . valBindings)

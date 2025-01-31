@@ -69,7 +69,7 @@ elaborate (Fun args (Just ret_type) Native) = do
   forM_ holes $ \ref -> modifyConstr ref lock
   if null holes
     then just (TArrow arg_types ret_type)
-    else just (TLam holes $ TArrow arg_types ret_type)
+    else just (TLam False holes $ TArrow arg_types ret_type)
 elaborate (Fun args ret_type body) = do
   -- Infer the type of the pattern
   results <- mapM inferPattern args
@@ -89,7 +89,7 @@ elaborate (Fun args ret_type body) = do
   forM_ holes $ \ref -> modifyConstr ref lock
   if null holes
     then just (TArrow arg_types ret_ty)
-    else just (TLam holes $ TArrow arg_types ret_ty)
+    else just (TLam False holes $ TArrow arg_types ret_ty)
 elaborate (App f args) = do
   -- Infer the types and holes of the function and arguments
   ElabResult f_type f_holes <- elaborate f
@@ -108,13 +108,16 @@ elaborate (App f args) = do
           -- pure (TSeq (cvrts ++ [ret_type]), arg_types, [])
           pure (TSeq $ cvrts ++ [ret_type], arg_types, [])
         -- If it is a type lambda, preserve the holes
-        TLam holes' f_type' -> do
+        TLam rigid holes' f_type' -> do
           (ret_type, arg_types, holes'') <- reduce f_type'
-          pure (TApp (TLam holes' ret_type) arg_types input_types, [], holes'')
+          pure
+            ( TApp (TLam rigid holes' ret_type) arg_types input_types
+            , []
+            , holes'')
         -- If it is an applied type lambda, reduce it
-        TApp (TLam holes'' ret_type) args' inputs' -> do
+        TApp (TLam rigid holes'' ret_type) args' inputs' -> do
           (ret_type', _, holes') <- reduce ret_type
-          pure (TApp (TLam holes'' ret_type') args' inputs', [], holes')
+          pure (TApp (TLam rigid holes'' ret_type') args' inputs', [], holes')
         TSeq seq -> do
           (ret_type, _, holes') <- reduce (last seq)
           pure (TSeq $ init seq ++ [ret_type], [], holes')
@@ -151,13 +154,13 @@ elaborate (Proj expr label) = do
         TRecord flds -> case lookup label flds of
           Just ty -> pure (ty, [])
           Nothing -> throw $ UndefinedLabel label
-        TLam holes rcd_type' -> do
+        TLam rigid holes rcd_type' -> do
           (ty, holes') <- reduce rcd_type'
-          pure (TLam holes ty, holes')
+          pure (TLam rigid holes ty, holes')
         TApp rcd_type' _ inputs -> do
           rcd_type'' <- simpleEval [] rcd_type'
           case rcd_type'' of
-            TLam refs body -> simpleEval (zip refs inputs) body >>= reduce
+            TLam _ refs body -> simpleEval (zip refs inputs) body >>= reduce
             _ -> throw $ CannotBeProjected rcd_type label
         TVar ref -> do
           free <- isFree ref
@@ -189,7 +192,7 @@ elaborate (Let pat rhs body) = do
       mapM_ (uncurry newBinding) pbindings
       elaborate body
   withHoles body_ty (rhs_holes ++ body_holes)
-elaborate (TypeAlias { name, poly, ty, body }) = case poly of
+elaborate (TypeAlias name poly ty body) = case poly of
   Nothing   -> do
     ref <- newTypeVar
     let indexed_ty = indexType (Just (name, ref)) [] ty
@@ -201,7 +204,7 @@ elaborate (TypeAlias { name, poly, ty, body }) = case poly of
   Just vars -> do
     refs <- mapM (const newTypeVar) vars
     ref <- newTypeVar
-    let indexed_ty = TLam refs
+    let indexed_ty = TLam False refs
           $ indexType (Just (name, ref)) (zip vars refs) ty
     ElabResult body_ty body_holes
       <- save'' $ newTypeBinding name indexed_ty >> elaborate body
@@ -258,7 +261,7 @@ checkPattern :: Pattern -> TypeTerm -> ElabState PatternResult
 checkPattern t (TFree x) = lookupType x >>= checkPattern t
 checkPattern t (TApp lam _ inputs) = simpleEval [] lam
   >>= \case
-    TLam refs ty -> simpleEval (zip refs inputs) ty
+    TLam _ refs ty -> simpleEval (zip refs inputs) ty
     _ -> throw $ CannotBeApplied lam
   >>= checkPattern t
 checkPattern (PAtom x) ty = do
@@ -306,25 +309,6 @@ unify (TArrow args1 ret1) (TArrow args2 ret2) = do
   unify ret1 ret2
 unify _ _ = pure ()
 
-indexType :: Maybe (String, Int) -> [(String, Int)] -> TypeTerm -> TypeTerm
-indexType self bds = \case
-  TFree s
-    | Just s == fmap fst self -> TFix $ snd (fromJust self)
-  TFree s -> case lookup s bds of
-    Just i  -> TVar i
-    Nothing -> TFree s
-  TTuple tys -> TTuple $ map (indexType self bds) tys
-  TRecord tys -> TRecord $ map (second (indexType self bds)) tys
-  TArrow args ret
-    -> TArrow (map (indexType self bds) args) (indexType self bds ret)
-  TLam holes ty -> TLam holes $ indexType self bds ty
-  TApp ty args inputs -> TApp (indexType self bds ty) args
-    $ map (indexType self bds) inputs
-  TSeq tys -> TSeq $ map (indexType self bds) tys
-  TLet name ty body
-    -> TLet name (indexType self bds ty) (indexType self bds body)
-  ty -> ty
-
 indexHoles :: TypeTerm -> ElabState (TypeTerm, [Int])
 indexHoles = \case
   THole -> do
@@ -343,9 +327,9 @@ indexHoles = \case
     (args', args_holes) <- mapAndUnzipM indexHoles args
     (ret', ret_holes) <- indexHoles ret
     pure (TArrow args' ret', concat args_holes ++ ret_holes)
-  TLam holes ty -> do
+  TLam rigid holes ty -> do
     (ty', ty_holes) <- indexHoles ty
-    pure (TLam holes ty', ty_holes)
+    pure (TLam rigid holes ty', ty_holes)
   TApp ty args inputs -> do
     (ty', ty_holes) <- indexHoles ty
     (args', args_holes) <- mapAndUnzipM indexHoles args

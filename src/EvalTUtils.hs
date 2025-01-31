@@ -27,7 +27,8 @@ data TypeVal = TVVar Int
              | TVArrow [TypeVal] TypeVal
              | TVTuple [TypeVal]
              | TVRecord [(String, TypeVal)]
-             | TVLam TClosure
+             | TVLam Bool TClosure
+             | TVApp TypeVal [TypeVal]
   deriving (Show)
 
 data TypePretty = PttyVar String

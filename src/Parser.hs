@@ -12,7 +12,7 @@ import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import           Data.Void (Void)
 import           Data.Functor (($>))
-import           Data.Foldable (maximumBy, minimumBy)
+import           Data.Foldable (maximumBy, minimumBy, Foldable(toList))
 import           Utils (tr)
 import           Debug.Trace (traceM, trace)
 import           Data.Traversable (for)
@@ -76,7 +76,8 @@ parseProgram = manyTill parseStatement eof
 -- | Statement parser
 
 parseStatement :: Parser Statement
-parseStatement = choice [parseFunDecl, parseLetDecl, parseTypeDecl]
+parseStatement =
+  choice [parseFunDecl, parseLetDecl, parseTypeDecl, parseEnumDecl]
 
 parseFunDecl :: Parser Statement
 parseFunDecl = FunDecl <$> (symbol "function" *> ident)
@@ -95,6 +96,19 @@ parseTypeDecl = TypeDecl <$> (symbol "type" *> typeIdent)
   <*> optional
     (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
   <*> (symbol "=" *> parseTypeTerm 0)
+
+parseEnumDecl :: Parser Statement
+parseEnumDecl = EnumDecl <$> (symbol "enum" *> typeIdent)
+  <*> optional
+    (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
+  <*> (symbol "{" *> parseEnumVariant `sepBy` symbol "," <* symbol "}")
+  where
+    parseEnumVariant = (,) <$> ident
+      <*> fmap
+        (concat . toList)
+        (optional
+           (between (symbol "(") (symbol ")")
+            $ parseTypeTerm 0 `sepBy` symbol ","))
 
 -- | Expression parser
 

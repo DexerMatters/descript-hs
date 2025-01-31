@@ -9,6 +9,7 @@ import           Utils (throw, all', put, save, get, gets, modify)
 import           Control.Monad
 import           Data.List (intercalate)
 import           GHC.Base (Alternative((<|>)))
+import           Data.Bool (bool)
 
 evalT :: TypeTerm -> EvalTState TypeVal
 evalT (TVar n) = lookupBinding' n
@@ -33,17 +34,18 @@ evalT (TArrow args ret) = TVArrow <$> mapM evalT args <*> evalT ret
 evalT (TTuple ts) = TVTuple <$> mapM evalT ts
 evalT (TRecord fields) = TVRecord
   <$> mapM (\(name, ty) -> (name, ) <$> evalT ty) fields
-evalT (TLam refs ty) = TVLam <$> (TClosure refs <$> get <*> pure ty)
+evalT (TLam rigid refs ty) = TVLam rigid
+  <$> (TClosure refs <$> get <*> pure ty)
 evalT (TApp lam [] inputs) = do
   modify $ \env -> env { fixFlag = True }
   let reduce = \case
-        TVLam (TClosure refs env body) -> do
+        TVLam rigid (TClosure refs env body) -> do
           -- Eval input types
           input_types <- mapM evalT inputs
           unless (length refs == length input_types)
             $ throw
             $ InadequateTypeArity
-              (TVLam (TClosure refs env body))
+              (TVLam rigid (TClosure refs env body))
               (TVTuple input_types)
           save
             $ do
@@ -69,7 +71,7 @@ evalT (TApp lam [] inputs) = do
   pure result
 evalT (TApp lam args inputs) = evalT lam
   >>= \case
-    TVLam (TClosure refs env body) -> do
+    TVLam rigid (TClosure refs env body) -> do
       -- Eval input types
       input_types <- mapM evalT inputs
       -- Eval argument types
@@ -90,7 +92,15 @@ evalT (TApp lam args inputs) = evalT lam
       save
         $ put env
         >> zipWithM_ (deduce refs) input_types arg_types
-        >> evalT body
+        >> bool
+          -- If the lambda is not rigid, we preserve the input
+          (do
+             newlyBound <- mapM lookupBinding refs
+             body' <- evalT body
+             pure $ TVApp body' newlyBound)
+          -- If the lambda is rigid, we evaluate the body
+          (evalT body)
+          rigid
         >>= exact
     _ -> error "Impossible"
 evalT (TConv from to) = do
@@ -149,12 +159,12 @@ lhs <: TVVar ref = do
   tops <- getTops evalT ref
   top_res <- mapM (<: lhs) tops
   pure $ all' top_res
-TVLam cls@(TClosure ref _ _) <: ty = do
+TVLam _ cls@(TClosure ref _ _) <: ty = do
   -- Eval the exact type of the abstraction
   let args = map TVVar ref
   rhs <- cls $$ args
   rhs <: ty
-ty <: TVLam cls@(TClosure ref _ _) = do
+ty <: TVLam _ cls@(TClosure ref _ _) = do
   -- Eval the exact type of the abstraction
   let args = map TVVar ref
   rhs <- cls $$ args
@@ -166,11 +176,11 @@ deduce :: [Int]    -- ^ References
        -> TypeVal  -- ^ Argument type
        -> EvalTState ()
 deduce [] a b = throw $ InadequateTypeArity a b
-deduce refs (TVLam cls@(TClosure refs' _ _)) ty = do
+deduce refs (TVLam _ cls@(TClosure refs' _ _)) ty = do
   let args = map TVVar refs'
   ret <- cls $$ args
   deduce (refs ++ refs') ret ty
-deduce refs ty (TVLam cls@(TClosure refs' _ _)) = do
+deduce refs ty (TVLam _ cls@(TClosure refs' _ _)) = do
   let args = map TVVar refs'
   ret <- cls $$ args
   deduce (refs ++ refs') ty ret
@@ -203,6 +213,10 @@ pretty :: TypeVal -> EvalTState String
 pretty (TVPrimitive p) = pure $ show p
 pretty (TVVar ref) = lookupFresh ref
 pretty (TVFix _) = pure "..."
+pretty (TVApp f ts) = do
+  f <- pretty f
+  ts' <- mapM pretty ts
+  pure $ f ++ "<" ++ intercalate ", " ts' ++ ">"
 pretty (TVTuple ts) = do
   ts' <- mapM pretty ts
   pure $ "(" ++ intercalate ", " ts' ++ ")"
@@ -213,11 +227,17 @@ pretty (TVArrow args ret) = do
   args' <- mapM pretty args
   ret' <- pretty ret
   pure $ "(" ++ intercalate ", " args' ++ ") -> " ++ ret'
-pretty (TVLam cls@(TClosure refs _ _)) = do
+pretty (TVLam _ cls@(TClosure refs _ _)) = do
   let args = map TVVar refs
   args' <- mapM pretty args
   bots <- mapM (getBots evalT >=> mapM pretty >=> pure . intercalate "+") refs
-  let args'' = zipWith (\arg bot -> arg ++ ":" ++ bot) args' bots
+  let args'' = zipWith
+        (\arg bot -> arg
+         ++ if null bot
+            then ""
+            else ":" ++ bot)
+        args'
+        bots
   ret <- cls $$ args
   ret' <- block $ pretty ret
   pure $ "forall<" ++ intercalate ", " args'' ++ ">. " ++ ret'

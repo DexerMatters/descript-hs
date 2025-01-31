@@ -12,6 +12,8 @@ import           Syn
 import           Utils (MState (runMState), modify, gets, throw)
 import GHC.Arr ((//), (!), assocs, Array, array)
 import Data.Maybe (fromJust, isJust)
+import Data.Bifunctor (second)
+import Data.List (nub)
 
 data ElabError = NeverHappens
                | UnboundVariable String
@@ -129,7 +131,7 @@ simpleEval bds = \case
   TTuple ts -> TTuple <$> mapM (simpleEval bds) ts
   TRecord fields -> TRecord
     <$> mapM (\(name, ty) -> (name, ) <$> simpleEval bds ty) fields
-  TLam refs ty -> TLam refs <$> simpleEval bds ty
+  TLam rigid refs ty -> TLam rigid refs <$> simpleEval bds ty
   TApp lam args inputs -> TApp <$> simpleEval bds lam
     <*> mapM (simpleEval bds) args
     <*> pure inputs
@@ -163,3 +165,61 @@ type ConstrEnv = Array Int (Maybe Constr)
 
 initialConstrEnv :: ConstrEnv
 initialConstrEnv = array (0, 1024) [(i, Nothing) | i <- [0 .. 1024]]
+
+
+
+
+indexType :: Maybe (String, Int) -> [(String, Int)] -> TypeTerm -> TypeTerm
+indexType self bds = \case
+  TFree s
+    | Just s == fmap fst self -> TFix $ snd (fromJust self)
+  TFree s -> case lookup s bds of
+    Just i  -> TVar i
+    Nothing -> TFree s
+  TTuple tys -> TTuple $ map (indexType self bds) tys
+  TRecord tys -> TRecord $ map (second (indexType self bds)) tys
+  TArrow args ret
+    -> TArrow (map (indexType self bds) args) (indexType self bds ret)
+  TLam rigid holes ty -> TLam rigid holes $ indexType self bds ty
+  TApp ty args inputs -> TApp (indexType self bds ty) args
+    $ map (indexType self bds) inputs
+  TSeq tys -> TSeq $ map (indexType self bds) tys
+  TLet name ty body
+    -> TLet name (indexType self bds ty) (indexType self bds body)
+  ty -> ty
+
+indexType' :: Maybe (String, Int) -> [(String, Int)] -> TypeTerm -> (TypeTerm, [Int])
+indexType' self bds = \case
+  TFree s
+    | Just s == fmap fst self -> (TFix $ snd (fromJust self), [])
+  TFree s -> case lookup s bds of
+    Just i  -> (TVar i, [i])
+    Nothing -> (TFree s, [])
+  TTuple tys -> let (tys', refs) = unzip $ fmap (indexType' self bds) tys in 
+    (TTuple tys', concat refs)
+
+  TRecord tys -> 
+    let (labels', fields) = unzip $ fmap (second (indexType' self bds)) tys in 
+    let (tys', refs) = unzip fields in
+    (TRecord $ zip labels' tys', concat refs)
+  TArrow args ret
+    -> 
+    let (args', refs) = unzip $ fmap (indexType' self bds) args in
+    let (ret', refs') = indexType' self bds ret in
+    (TArrow args' ret', concat refs ++ refs')
+  TLam rigid holes ty -> 
+    let (ty', refs) = indexType' self bds ty in
+    (TLam rigid holes ty', refs)
+  TApp ty args inputs -> 
+    let (ty', refs) = indexType' self bds ty in
+    let (args', refs') = unzip $ fmap (indexType' self bds) args in
+    let (inputs', refs'') = unzip $ fmap (indexType' self bds) inputs in
+    (TApp ty' args' inputs',  refs ++ concat refs' ++ concat refs'')
+  TSeq tys -> 
+    let (tys', refs) = unzip $ fmap (indexType' self bds) tys in
+    (TSeq tys, concat refs)
+  TLet name ty body -> 
+    let (ty', refs) = indexType' self bds ty in
+    let (body', refs') = indexType' self bds body in
+    (TLet name ty' body', refs ++ refs')
+  ty -> (ty, [])
