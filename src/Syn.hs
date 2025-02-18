@@ -56,18 +56,16 @@ instance Show PrimitiveType where
   show (PrimNewType s) = s
 
 data TypeTerm =
-    TVar Int                     -- x
+    TVar String                  -- x
   | TPrimitive PrimitiveType     -- int, bool, unit, string
   | TArrow [TypeTerm] TypeTerm   -- (t1, t2, ..., tn) -> t
   | TTuple [TypeTerm]            -- (t1, t2, ..., tn)
   | TRecord [(String, TypeTerm)] -- { l1: t1, l2: t2, ..., ln: tn }
-  | TApp TypeTerm [TypeTerm] [TypeTerm]     -- t<t1, t2, ..., tn>
-  | TFree String
+  | TApp TypeTerm [TypeTerm]     -- t<t1, t2, ..., tn>
   | THole                        -- ?
     -- Intermediate types
   | TFix Int
-  | TConv TypeTerm TypeTerm
-  | TLam Bool [Int] TypeTerm
+  | TLam [String] TypeTerm
   | TSeq [TypeTerm]
   | TLet Int TypeTerm TypeTerm
 
@@ -79,12 +77,10 @@ instance Show TypeTerm where
   show (TTuple tys) = "(" ++ intercalate "," (map show tys) ++ ")"
   show (TRecord fields) =
     "{" ++ intercalate "," (map (\(l, t) -> l ++ ": " ++ show t) fields) ++ "}"
-  show (TApp t _ tys) = show t ++ "<" ++ intercalate "," (map show tys) ++ ">"
-  show (TConv t1 t2) = show t1 ++ " => " ++ show t2
-  show (TLam _ xs t) =
+  show (TApp t tys) = show t ++ "<" ++ intercalate "," (map show tys) ++ ">"
+  show (TLam xs t) =
     "λ" ++ intercalate "," (map (\x -> "%" ++ show x) xs) ++ ". " ++ show t
   show (TSeq tys) = "{" ++ intercalate "," (map show tys) ++ "}"
-  show (TFree s) = s
   show (TLet s t1 t2) =
     "let %" ++ show s ++ ": " ++ show t1 ++ " in " ++ show t2
   show THole = "_"

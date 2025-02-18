@@ -1,4 +1,1 @@
-enum Result<V, E> {
-  ok(V, int),
-  err(E)
-}
+((x, y) => x.a)

@@ -227,13 +227,13 @@ parseFunctionType = TArrow
   <*> (symbol "->" *> parseTypeTerm 0)
 
 parseFreeType :: Parser TypeTerm
-parseFreeType = TFree <$> typeIdent
+parseFreeType = TVar <$> typeIdent
 
 parseHoleType :: Parser TypeTerm
 parseHoleType = THole <$ symbol "?"
 
 parseAppType :: Parser TypeTerm
-parseAppType = TApp <*> pure [] <$> parseTypeTerm 2
+parseAppType = TApp <$> parseTypeTerm 2
   <*> between (symbol "<") (symbol ">") (parseTypeTerm 0 `sepBy` symbol ",")
 
 -- | Pattern parser
