@@ -17,7 +17,7 @@ import           Data.Sequence (Seq((:|>)), adjust, (|>))
 import qualified Data.Sequence as Seq
 import qualified Data.Foldable as Foldable
 import           Pretty (PrettyPrint(..), txt, concatWith, space, freshGreek
-                       , Pretty(Empty), RawStr)
+                       , Pretty(Empty), RawStr, Color(..), ( #> ), render)
 import           Control.Monad.State (StateT, modify, gets, MonadState(..))
 
 -- | Evaluated Types
@@ -56,20 +56,21 @@ instance PrettyPrint TypeValue where
     let vars = tr (concatMap (extractVars env) args)
         args' = fst <$> vars
         hasWhere = not $ all (null . snd) vars
-    in txt "∀"
+    in Bold Green #> txt "∀"
        <> concatWith space (pretty <$> args')
-       <> txt ". "
+       <> Bold Green #> txt ". "
        <> pretty tv
        <> if hasWhere
-          then txt " where " <> concatWith (txt "; ") (parseVar <$> vars)
+          then Bold Green #> txt " where "
+            <> concatWith (txt "; ") (parseVar <$> vars)
           else Empty
     where
       parseVar (_, []) = Empty
       parseVar (tv', bs) =
         pretty tv' <> txt ": " <> concatWith (txt ", ") (pretty <$> bs)
-  pretty (TVVar lvl idx) = freshGreek (hashIntPair (lvl, idx))
-  pretty TVTop = txt "⊤"
-  pretty TVBot = txt "⊥"
+  pretty (TVVar lvl idx) = Italics Green #> freshGreek (hashIntPair (lvl, idx))
+  pretty TVTop = Italics Green #> txt "⊤"
+  pretty TVBot = Italics Green #> txt "⊥"
   pretty (TVArrow args ret) = txt "("
     <> concatWith (txt ", ") (pretty <$> args)
     <> txt ") -> "
@@ -80,6 +81,9 @@ instance PrettyPrint TypeValue where
     (TVRecord fields) = txt "{" <> concatWith (txt ", ") parseFields <> txt "}"
     where
       parseFields = (\(l, t) -> txt l <> txt ": " <> pretty t) <$> fields
+
+pttyType :: TypeValue -> String
+pttyType tv = render $ Green #> pretty tv
 
 extractVars :: Seq (Seq [Border]) -> TypeValue -> [(TypeValue, [Border])]
 extractVars env = \case

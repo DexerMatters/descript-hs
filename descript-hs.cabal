@@ -30,7 +30,6 @@ library
       Pretty
       Syn
       TypeElab
-      TypeEval
       TypeUtils
       Utils
   other-modules:

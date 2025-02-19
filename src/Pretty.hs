@@ -23,13 +23,23 @@ data Pretty b a = Show a => Text a
                 | Ord b => Fresh (Int -> Pretty b a) b
                 | Empty
 
-data Color = Red
-           | Green
-           | Blue
-           | Yellow
-           | Magenta
-           | Cyan
-           | White
+data Color =
+    Red
+  | Green
+  | Blue
+  | Yellow
+  | Magenta
+  | Cyan
+  | White
+  | BrightRed
+  | BrightGreen
+  | BrightBlue
+  | BrightYellow
+  | BrightMagenta
+  | BrightCyan
+  | Bold Color
+  | Italics Color
+  | Dim Color
 
 type family RawString t
 
@@ -39,13 +49,22 @@ type instance RawString String = RawStr
 
 instance Show Color where
   show = \case
-    Red     -> "31"
-    Green   -> "32"
-    Blue    -> "34"
-    Yellow  -> "33"
-    Magenta -> "35"
-    Cyan    -> "36"
-    White   -> "37"
+    Red           -> "31"
+    Green         -> "32"
+    Blue          -> "34"
+    Yellow        -> "33"
+    Magenta       -> "35"
+    Cyan          -> "36"
+    White         -> "37"
+    BrightRed     -> "91"
+    BrightGreen   -> "92"
+    BrightBlue    -> "94"
+    BrightYellow  -> "93"
+    BrightMagenta -> "95"
+    BrightCyan    -> "96"
+    Bold c        -> "1;" ++ show c
+    Italics c     -> "3;" ++ show c
+    Dim c         -> "2;" ++ show c
 
 txt :: String -> Pretty b RawStr
 txt = Text . RawStr
@@ -62,7 +81,7 @@ freshGreek = Fresh $ \i -> txt (['α' .. 'ω'] !! i:"")
 ( #> ) :: Color -> Pretty b a -> Pretty b a
 ( #> ) = Colored
 
-infixr 6 #>
+infixr 9 #>
 
 concat :: Foldable t => t (Pretty b a) -> Pretty b a
 concat = foldr Concat Empty

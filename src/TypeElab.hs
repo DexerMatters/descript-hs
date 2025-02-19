@@ -31,6 +31,7 @@ import           Control.Monad.Except (runExceptT)
 import           Prelude hiding (exp)
 import           Debug.Trace (traceM)
 import           Data.Functor.Identity
+import           GHC.Base (when)
 
 -- | Type Elaboration
 elaborate :: String |-> TypeValue -- ^ Bindings
@@ -53,7 +54,7 @@ elaborate bindings = \case
     (ts, concat -> bindings') <- mapAndUnzipM inferPattern ps
     isPoly <- gets $ not . null . (!!! level)
     unless isPoly downlevel
-    save
+    result <- save
       do
         let bindings'' = bindings <> bindings'
         bodyT <- elaborate bindings'' body
@@ -71,11 +72,13 @@ elaborate bindings = \case
             (TVArrow ts retT)
             (TVLam ts (TClosure (TVArrow ts retT) env))
             isPoly
+    when isPoly downlevel
+    pure result
   App f args -> do
     fT <- elaborate bindings f
+    argsT <- mapM (elaborate bindings) args
     let aux = \case
           TVArrow ts ret -> do
-            argsT <- mapM (elaborate bindings) args
             zipWithM_
               (\t input -> input `isSubtypeOf` t
                >>= flip unless (throwError (TypeMismatch input t)))
@@ -86,18 +89,14 @@ elaborate bindings = \case
           TVLam ts cls@(TClosure _ env) -> save
             do
               put env
-              argsT <- mapM (elaborate bindings) args
               deducedSet <- concat
                 <$> zipWithM (deduce (Seq.length env - 1)) ts argsT
-              traceM
-                $ "ts = "
-                ++ show ts
-                ++ ", argsT = "
-                ++ show argsT
-                ++ ", deducedSet = "
-                ++ show deducedSet
               reduced <- cls $$ map snd (nubAndSortAssoc deducedSet)
               aux reduced
+          TVVar lvl idx -> do
+            (TVVar lvl -> var) <- newVar lvl
+            unify (TVVar lvl idx) (TVArrow argsT var)
+            pure var
           _ -> throwError (TypeMismatch fT (TVArrow [] TVBot))
     aux fT
   Proj e label -> do
@@ -192,18 +191,30 @@ unify = curry
       | length ts1 == length ts2 -> do
         zipWithM_ unify ts1 ts2
         unify t1 t2
-    _ -> error "Not implemented"
+    _ -> pure ()
 
 -- | A `isSubtypeOf` B 
 --   A is a subtype of B if A is more general than B
 --   A can be substituted for B
+--   TVBot is the most general type
+--   TVTop is the most specific type
 isSubtypeOf :: TypeValue -> TypeValue -> TypeCheckT m Bool
 isSubtypeOf = curry
   $ \case
     (TVBot, _) -> pure True
     (_, TVTop) -> pure True
     (TVPrimitive p1, TVPrimitive p2) -> pure (p1 == p2)
+    (TVLam _ (TClosure t env), ty) -> save $ put env >> isSubtypeOf t ty
+    (ty, TVLam _ (TClosure t env)) -> save $ put env >> isSubtypeOf ty t
     (TVVar lvl idx, TVVar lvl' idx') -> do
+      env <- get
+      traceM
+        $ "Checking "
+        ++ show (TVVar lvl idx)
+        ++ " with "
+        ++ show (TVVar lvl' idx')
+        ++ " in "
+        ++ show env
       border <- getBorder lvl idx
       border' <- getBorder lvl' idx'
       -- border is more general than border'
@@ -243,8 +254,6 @@ isSubtypeOf = curry
         ts <- zipWithM isSubtypeOf ts2 ts1
         t <- isSubtypeOf t1 t2
         pure (and ts && t)
-    (TVLam _ (TClosure t env), ty) -> save $ put env >> isSubtypeOf t ty
-    (ty, TVLam _ (TClosure t env)) -> save $ put env >> isSubtypeOf ty t
     _ -> pure False
 
 ($$) :: TClosure -> [TypeValue] -> TypeCheckT m TypeValue
@@ -253,6 +262,9 @@ TClosure t env $$ ts = put env >> reduce ts t
 reduce :: [TypeValue] -> TypeValue -> TypeCheckT m TypeValue
 reduce ts = \case
   TVVar lvl idx -> do
+    traceM $ "Reducing " ++ show (TVVar lvl idx) ++ " with " ++ show ts
+    env <- get
+    traceM $ "Env: " ++ show env
     lvl' <- getCurrentLevel
     if lvl' == lvl
       then 
@@ -273,15 +285,15 @@ reduce ts = \case
   TVRecord fs -> TVRecord <$> mapM (\(f, t) -> (f, ) <$> reduce ts t) fs
   TVArrow ts' t -> TVArrow <$> mapM (reduce ts) ts' <*> reduce ts t
   TVLam ts' (TClosure t env) -> TVLam ts'
-    <$> (TClosure <$> reduce ts t <*> pure env)
+    <$> (TClosure <$> save (put env >> reduce ts t) <*> pure env)
   t -> pure t
 
 deduce :: Level -> TypeValue -> TypeValue -> TypeCheckT m [(Int, TypeValue)]
 deduce lvl = curry
   \case
-    (TVVar lvl' idx, t) -> do
-      unlessM (isSubtypeOf t (TVVar lvl idx))
-        $ throwError (TypeMismatch t (TVVar lvl idx))
+    (tv@(TVVar lvl' idx), t) -> do
+      traceM $ "Deducing " ++ show tv ++ " with " ++ show t
+      unlessM (isSubtypeOf t tv) $ throwError (TypeMismatch t tv)
       border <- getBorder lvl idx
       tys <- fmap concat
         $ forM border
@@ -290,14 +302,30 @@ deduce lvl = curry
           bot'' <- deduce lvl t bot'
           pure $ top'' ++ bot''
       pure $ bool [] [(idx, t)] (lvl == lvl') ++ tys
+    (t, tv@(TVVar lvl' idx)) -> do
+      unlessM (isSubtypeOf tv t) $ throwError (TypeMismatch tv t)
+      border <- getBorder lvl idx
+      tys <- fmap concat
+        $ forM border
+        $ \(Border top' bot') -> do
+          top'' <- deduce lvl t top'
+          bot'' <- deduce lvl bot' t
+          pure $ top'' ++ bot''
+      pure $ bool [] [(idx, t)] (lvl == lvl') ++ tys
     (TVTuple ts1, TVTuple ts2)
       | length ts1 == length ts2 -> concat <$> zipWithM (deduce lvl) ts1 ts2
     (TVRecord fs1, TVRecord fs2) -> fmap concat
-      $ forM fs1
-      $ \(f, t1) -> case lookup f fs2 of
+      $ forM fs2
+      $ \(f, t1) -> case lookup f fs1 of
         Just t2 -> deduce lvl t1 t2
         Nothing -> throwError (MissingField f)
-    (a, b) -> unlessM (isSubtypeOf a b) (throwError (TypeMismatch a b))
+    (TVArrow ts1 t1, TVArrow ts2 t2) -> do
+      ts <- concat <$> zipWithM (deduce lvl) ts2 ts1
+      t <- deduce lvl t1 t2
+      pure $ ts ++ t
+    (TVLam _ (TClosure t env), ty) -> save $ put env >> deduce lvl t ty
+    (ty, TVLam _ (TClosure t env)) -> save $ put env >> deduce lvl ty t
+    (a, b) -> unlessM (isSubtypeOf b a) (throwError (TypeMismatch a b))
       >> pure []
 
 testTypeCheck :: ExprTerm -> Either TypeFailure TypeValue

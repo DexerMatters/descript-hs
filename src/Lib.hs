@@ -6,7 +6,7 @@ import           Text.Megaparsec (parse, errorBundlePretty)
 import           Utils (fatal)
 import           Parser (allowedAll)
 import           TypeElab (testTypeCheck)
-import           Pretty (render, PrettyPrint(pretty))
+import           Pretty (render, PrettyPrint(pretty), Color(Green), ( #> ))
 
 runTest :: () -> IO ()
 runTest () = do
@@ -17,6 +17,6 @@ runTest () = do
     Right ast -> do
       case testTypeCheck ast of
         Left err -> putStrLn . fatal $ show err
-        Right t  -> putStrLn $ render $ pretty t
+        Right t  -> putStrLn $ render $ Green #> pretty t
   where
     filePath = "/home/dexer/Repos/haskell/descript-hs/demo/test.ds"

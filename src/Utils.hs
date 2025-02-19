@@ -88,3 +88,4 @@ nubAndSortAssoc = nubAndSortBy (compare `on` fst)
 
 hashIntPair :: (Int, Int) -> Int
 hashIntPair (x, y) = (x + y) * (x + y + 1) `div` 2 + y
+

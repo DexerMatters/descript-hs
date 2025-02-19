@@ -1,22 +1,20 @@
 {-# LANGUAGE LambdaCase #-}
 
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
 module Parser where
 
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
                                 , sepBy, MonadParsec(try, eof), optional)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
-                    , PrimitiveType(..), Statement(..), BinOp(..), operatorTable
-                    , Assoc(..))
-import           GHC.Base (Alternative(..), maxInt)
+                    , PrimitiveType(..), Statement(..), BinOp(..)
+                    , operatorTable)
+import           GHC.Base (Alternative(..))
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import           Data.Void (Void)
 import           Data.Functor (($>))
-import           Data.Foldable (maximumBy, minimumBy, Foldable(toList))
-import           Utils (tr)
-import           Debug.Trace (traceM, trace)
-import           Data.Traversable (for)
-import           Text.Megaparsec.Debug (MonadParsecDbg(dbg))
+import           Data.Foldable (Foldable(toList))
 
 type Parser = Parsec Void String
 
