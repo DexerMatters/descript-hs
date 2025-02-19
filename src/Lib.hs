@@ -1,13 +1,12 @@
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
 module Lib where
 
-import           Control.Monad.State (StateT(runStateT), State, MonadState(put)
-                                    , MonadTrans(lift))
-import           Control.Monad.State.Lazy (runState)
-import           Text.Megaparsec (parseErrorPretty, runParser, parse
-                                , errorBundlePretty)
-import           Utils (fatal, success)
+import           Text.Megaparsec (parse, errorBundlePretty)
+import           Utils (fatal)
 import           Parser (allowedAll)
 import           TypeElab (testTypeCheck)
+import           Pretty (render, PrettyPrint(pretty))
 
 runTest :: () -> IO ()
 runTest () = do
@@ -18,6 +17,6 @@ runTest () = do
     Right ast -> do
       case testTypeCheck ast of
         Left err -> putStrLn . fatal $ show err
-        Right t  -> putStrLn . success $ show t
+        Right t  -> putStrLn $ render $ pretty t
   where
     filePath = "/home/dexer/Repos/haskell/descript-hs/demo/test.ds"

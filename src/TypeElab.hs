@@ -26,14 +26,11 @@ import           Control.Monad.Error.Class (MonadError(throwError))
 import           Data.Bool (bool)
 import           Control.Applicative (Applicative(liftA2))
 import qualified Data.Sequence as Seq
-import           Control.Monad.State (StateT(runStateT), evalStateT, runState
-                                    , evalState)
+import           Control.Monad.State (evalState)
 import           Control.Monad.Except (runExceptT)
-import           Control.Monad.Identity (Identity(Identity)
-                                       , IdentityT(runIdentityT))
-import           Data.Functor.Identity (runIdentity)
 import           Prelude hiding (exp)
 import           Debug.Trace (traceM)
+import           Data.Functor.Identity
 
 -- | Type Elaboration
 elaborate :: String |-> TypeValue -- ^ Bindings
@@ -86,12 +83,21 @@ elaborate bindings = \case
               argsT
             zipWithM_ unify ts argsT
             pure ret
-          TVLam ts cls@(TClosure _ env) -> do
-            argsT <- mapM (elaborate bindings) args
-            deducedSet <- concat
-              <$> zipWithM (deduce (Seq.length env - 1)) ts argsT
-            reduced <- cls $$ map snd (nubAndSortAssoc deducedSet)
-            aux reduced
+          TVLam ts cls@(TClosure _ env) -> save
+            do
+              put env
+              argsT <- mapM (elaborate bindings) args
+              deducedSet <- concat
+                <$> zipWithM (deduce (Seq.length env - 1)) ts argsT
+              traceM
+                $ "ts = "
+                ++ show ts
+                ++ ", argsT = "
+                ++ show argsT
+                ++ ", deducedSet = "
+                ++ show deducedSet
+              reduced <- cls $$ map snd (nubAndSortAssoc deducedSet)
+              aux reduced
           _ -> throwError (TypeMismatch fT (TVArrow [] TVBot))
     aux fT
   Proj e label -> do

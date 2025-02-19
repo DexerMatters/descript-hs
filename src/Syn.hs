@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
 module Syn where
 
 import           Data.List (intercalate)

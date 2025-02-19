@@ -86,6 +86,5 @@ nubAndSortBy cmp = List.sortBy cmp . List.nubBy (\x y -> cmp x y == EQ)
 nubAndSortAssoc :: Ord a => [(a, b)] -> [(a, b)]
 nubAndSortAssoc = nubAndSortBy (compare `on` fst)
 
-
--- | Monad utilities
-
+hashIntPair :: (Int, Int) -> Int
+hashIntPair (x, y) = (x + y) * (x + y + 1) `div` 2 + y

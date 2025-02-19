@@ -4,21 +4,21 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
+
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module TypeUtils where
 
-import           Utils (Ref, type (|->), Level, Index, (!!!))
-import           Syn (TypeTerm, PrimitiveType, Pattern, ExprTerm)
-import           Control.Monad.State (StateT(runStateT), get, modify
-                                    , MonadTrans(lift), gets, MonadState(..))
-import           Control.Monad.Except (ExceptT, Except, MonadError(..))
-import           Data.Map (insert, insertWith)
-import           Data.Map.Lazy ((!?))
-import           GHC.Arr (Array)
+import           Utils (type (|->), Level, Index, (!!!), hashIntPair, tr)
+import           Syn (PrimitiveType, Pattern)
+import           Control.Monad.Except (ExceptT)
 import           Data.Sequence (Seq((:|>)), adjust, (|>))
-import           Data.Bool (bool)
 import qualified Data.Sequence as Seq
 import qualified Data.Foldable as Foldable
+import           Pretty (PrettyPrint(..), txt, concatWith, space, freshGreek
+                       , Pretty(Empty), RawStr)
+import           Control.Monad.State (StateT, modify, gets, MonadState(..))
 
 -- | Evaluated Types
 
@@ -40,8 +40,59 @@ instance Show TClosure where
   show (TClosure tv env) =
     show tv ++ " " ++ show (fmap Foldable.toList (Foldable.toList env))
 
+instance PrettyPrint TClosure where
+  pretty (TClosure tv _) = pretty tv
+
 instance Show Border where
   show (Border t b) = ">" ++ show t ++ " " ++ show b ++ "<"
+
+instance PrettyPrint Border where
+  pretty (Border t b) = pretty b <> txt "~" <> pretty t
+
+instance PrettyPrint TypeValue where
+  pretty :: TypeValue -> Pretty Int RawStr
+  pretty (TVPrimitive pt) = txt $ show pt
+  pretty (TVLam args (TClosure tv env)) =
+    let vars = tr (concatMap (extractVars env) args)
+        args' = fst <$> vars
+        hasWhere = not $ all (null . snd) vars
+    in txt "∀"
+       <> concatWith space (pretty <$> args')
+       <> txt ". "
+       <> pretty tv
+       <> if hasWhere
+          then txt " where " <> concatWith (txt "; ") (parseVar <$> vars)
+          else Empty
+    where
+      parseVar (_, []) = Empty
+      parseVar (tv', bs) =
+        pretty tv' <> txt ": " <> concatWith (txt ", ") (pretty <$> bs)
+  pretty (TVVar lvl idx) = freshGreek (hashIntPair (lvl, idx))
+  pretty TVTop = txt "⊤"
+  pretty TVBot = txt "⊥"
+  pretty (TVArrow args ret) = txt "("
+    <> concatWith (txt ", ") (pretty <$> args)
+    <> txt ") -> "
+    <> pretty ret
+  pretty (TVTuple elems) =
+    txt "(" <> concatWith (txt ", ") (pretty <$> elems) <> txt ")"
+  pretty
+    (TVRecord fields) = txt "{" <> concatWith (txt ", ") parseFields <> txt "}"
+    where
+      parseFields = (\(l, t) -> txt l <> txt ": " <> pretty t) <$> fields
+
+extractVars :: Seq (Seq [Border]) -> TypeValue -> [(TypeValue, [Border])]
+extractVars env = \case
+  TVVar lvl idx
+    | lvl == Seq.length env - 1
+      -> let border = env !!! lvl !!! idx
+             tops = concatMap (extractVars env . top) border
+             bots = concatMap (extractVars env . bot) border
+         in (TVVar lvl idx, border):tops ++ bots
+  TVArrow args ret -> concatMap (extractVars env) args ++ extractVars env ret
+  TVTuple elems -> concatMap (extractVars env) elems
+  TVRecord fields -> concatMap (extractVars env . snd) fields
+  _ -> []
 
 -- | Environment for type checking
 

@@ -27,6 +27,7 @@ library
   exposed-modules:
       Lib
       Parser
+      Pretty
       Syn
       TypeElab
       TypeEval
