@@ -10,7 +10,8 @@
 
 module TypeUtils where
 
-import           Utils (type (|->), Level, Index, (!!!), hashIntPair, tr)
+import           Utils (type (|->), Level, Index, (!!!), hashIntPair, tr
+                      , zipWith')
 import           Syn (PrimitiveType, Pattern)
 import           Control.Monad.Except (ExceptT)
 import           Data.Sequence (Seq((:|>)), adjust, (|>))
@@ -19,11 +20,12 @@ import qualified Data.Foldable as Foldable
 import           Pretty (PrettyPrint(..), txt, concatWith, space, freshGreek
                        , Pretty(Empty), RawStr, Color(..), ( #> ), render)
 import           Control.Monad.State (StateT, modify, gets, MonadState(..))
+import qualified Utils as U
 
 -- | Evaluated Types
 
 data TypeValue = TVPrimitive PrimitiveType
-               | TVLam [TypeValue] TClosure
+               | TVLam [TypeValue] Level TypeValue
                | TVVar Level Index
                | TVTop    -- Most general type
                | TVBot    -- Most specific type
@@ -32,66 +34,18 @@ data TypeValue = TVPrimitive PrimitiveType
                | TVRecord [(String, TypeValue)]
   deriving Show
 
-data Border = Border { top :: TypeValue, bot :: TypeValue }
-
-data TClosure = TClosure TypeValue (Seq (Seq [Border]))
-
-instance Show TClosure where
-  show (TClosure tv env) =
-    show tv ++ " " ++ show (fmap Foldable.toList (Foldable.toList env))
-
-instance PrettyPrint TClosure where
-  pretty (TClosure tv _) = pretty tv
+type Border = U.Border TypeValue
 
 instance Show Border where
-  show (Border t b) = ">" ++ show t ++ " " ++ show b ++ "<"
-
-instance PrettyPrint Border where
-  pretty (Border t b) = pretty b <> txt "~" <> pretty t
-
-instance PrettyPrint TypeValue where
-  pretty :: TypeValue -> Pretty Int RawStr
-  pretty (TVPrimitive pt) = txt $ show pt
-  pretty (TVLam args (TClosure tv env)) =
-    let vars = tr (concatMap (extractVars env) args)
-        args' = fst <$> vars
-        hasWhere = not $ all (null . snd) vars
-    in Bold Green #> txt "∀"
-       <> concatWith space (pretty <$> args')
-       <> Bold Green #> txt ". "
-       <> pretty tv
-       <> if hasWhere
-          then Bold Green #> txt " where "
-            <> concatWith (txt "; ") (parseVar <$> vars)
-          else Empty
-    where
-      parseVar (_, []) = Empty
-      parseVar (tv', bs) =
-        pretty tv' <> txt ": " <> concatWith (txt ", ") (pretty <$> bs)
-  pretty (TVVar lvl idx) = Italics Green #> freshGreek (hashIntPair (lvl, idx))
-  pretty TVTop = Italics Green #> txt "⊤"
-  pretty TVBot = Italics Green #> txt "⊥"
-  pretty (TVArrow args ret) = txt "("
-    <> concatWith (txt ", ") (pretty <$> args)
-    <> txt ") -> "
-    <> pretty ret
-  pretty (TVTuple elems) =
-    txt "(" <> concatWith (txt ", ") (pretty <$> elems) <> txt ")"
-  pretty
-    (TVRecord fields) = txt "{" <> concatWith (txt ", ") parseFields <> txt "}"
-    where
-      parseFields = (\(l, t) -> txt l <> txt ": " <> pretty t) <$> fields
-
-pttyType :: TypeValue -> String
-pttyType tv = render $ Green #> pretty tv
+  show (U.Border t b) = ">" ++ show t ++ " " ++ show b ++ "<"
 
 extractVars :: Seq (Seq [Border]) -> TypeValue -> [(TypeValue, [Border])]
 extractVars env = \case
   TVVar lvl idx
     | lvl == Seq.length env - 1
       -> let border = env !!! lvl !!! idx
-             tops = concatMap (extractVars env . top) border
-             bots = concatMap (extractVars env . bot) border
+             tops = concatMap (extractVars env . U.top) border
+             bots = concatMap (extractVars env . U.bot) border
          in (TVVar lvl idx, border):tops ++ bots
   TVArrow args ret -> concatMap (extractVars env) args ++ extractVars env ret
   TVTuple elems -> concatMap (extractVars env) elems
@@ -112,6 +66,7 @@ data TypeFailure = UndefinedType TypeValue
                  | BadPattern Pattern TypeValue
                  | BadConversion TypeValue TypeValue
                  | MissingField String
+                 | TypeVariableOutOfScope Level Index
   deriving Show
 
 type TypeResult a = Either TypeFailure a
@@ -151,7 +106,7 @@ getBorder lvl idx = gets $ (!!! idx) . (!!! lvl)
 newVar :: Level -> TypeCheckT m Index
 newVar lvl = do
   idx <- gets (Seq.length . (!!! lvl))
-  modify (adjust (|> []) lvl)
+  modify (adjust (|> [U.Border TVTop TVBot]) lvl)
   pure idx
 
 save :: TypeCheckT m a -> TypeCheckT m a

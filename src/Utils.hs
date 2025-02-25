@@ -7,6 +7,9 @@
 
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE InstanceSigs #-}
+
 module Utils where
 
 import           Debug.Trace
@@ -17,6 +20,7 @@ import           GHC.Base (liftA2)
 import           Control.Monad (when, unless)
 import qualified Data.List as List
 import           Data.Function (on)
+import           Data.Functor.Contravariant (Contravariant(contramap))
 
 -- | Auxiliary functions
 
@@ -27,6 +31,9 @@ type Ref = Int
 type Level = Int
 
 type Index = Int
+
+data Border a = Border { top :: a, bot :: a }
+  deriving (Functor)
 
 -- | Implementation for debugging purposes
 
@@ -89,3 +96,26 @@ nubAndSortAssoc = nubAndSortBy (compare `on` fst)
 hashIntPair :: (Int, Int) -> Int
 hashIntPair (x, y) = (x + y) * (x + y + 1) `div` 2 + y
 
+zipWith' :: (Monoid a, Monoid b) => (a -> b -> c) -> Seq a -> Seq b -> Seq c
+zipWith' f a b
+  | Seq.length a > Seq.length b =
+    Seq.zipWith f a (b <> Seq.replicate (Seq.length a - Seq.length b) mempty)
+  | otherwise =
+    Seq.zipWith f (a <> Seq.replicate (Seq.length b - Seq.length a) mempty) b
+
+-- | Laziness
+
+newtype Lazy b a = Lazy { force :: b -> a }
+
+instance Functor (Lazy b) where
+  fmap f (Lazy g) = Lazy (f . g)
+
+instance Applicative (Lazy b) where
+  pure = Lazy . const
+
+  Lazy f <*> Lazy x = Lazy $ \b -> f b (x b)
+
+instance Monad (Lazy b) where
+  return = pure
+
+  Lazy f >>= g = Lazy $ \b -> (force $ g (f b)) b

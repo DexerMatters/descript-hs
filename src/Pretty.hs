@@ -9,6 +9,8 @@
 
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
+{-# LANGUAGE MultiParamTypeClasses #-}
+
 module Pretty where
 
 import           Control.Monad.State (State, evalState, modify, gets)
@@ -87,11 +89,12 @@ concat :: Foldable t => t (Pretty b a) -> Pretty b a
 concat = foldr Concat Empty
 
 concatWith :: Foldable t => Pretty b a -> t (Pretty b a) -> Pretty b a
-concatWith divider = foldr1
-  $ curry
-  $ \case
-    (a, Empty) -> a
-    (a, b)     -> Concat a (Concat divider b)
+concatWith divider = foldr
+  (curry
+   $ \case
+     (a, Empty) -> a
+     (a, b)     -> Concat a (Concat divider b))
+  Empty
 
 render :: Ord b => Pretty b a -> String
 render x = evalState (render' 0 [] x) Set.empty
@@ -131,5 +134,5 @@ instance Monoid (Pretty b a) where
 instance Show RawStr where
   show (RawStr s) = s
 
-class PrettyPrint a where
-  pretty :: a -> Pretty Int RawStr
+class Ord b => PrettyPrint a b where
+  pretty :: a -> Pretty b RawStr
