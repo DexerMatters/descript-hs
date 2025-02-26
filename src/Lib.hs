@@ -7,12 +7,24 @@ module Lib where
 import           Text.Megaparsec (parse, errorBundlePretty)
 import           Utils (fatal)
 import           Parser (allowedAll)
-import           TypeElab (testTypeCheck)
-import           Pretty (render, PrettyPrint(pretty), Color(Green), ( #> ))
+import           Pretty (render)
 import           TypePretty (testInferType)
+import           System.IO
 
 runTest :: () -> IO ()
 runTest () = do
+  -- hSetBuffering stdout NoBuffering
+  -- putStr "> "
+  -- raw <- getLine
+  -- case parse allowedAll "" raw of
+  --   Left err  -> putStrLn . fatal $ errorBundlePretty err
+  --   Right ast -> do
+  --     case testInferType ast of
+  --       Left err   -> putStrLn . fatal $ show err
+  --       Right ptty -> putStrLn $ render ptty
+  -- runTest ()
+
+
   -- Read the file
   raw <- readFile filePath
   case parse allowedAll "" raw of

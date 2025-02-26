@@ -7,8 +7,8 @@ module Parser where
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
                                 , sepBy, MonadParsec(try, eof), optional)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
-                    , PrimitiveType(..), Statement(..), BinOp(..)
-                    , operatorTable)
+                    , PrimitiveType(..), Statement(..), BinOp(..), operatorTable
+                    , TypePattern(..), TypeDescriptor(..))
 import           GHC.Base (Alternative(..))
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
@@ -117,6 +117,10 @@ parseParen = between (symbol "(") (symbol ")") allowedAll
 parseVariable :: Parser ExprTerm
 parseVariable = Var <$> ident
 
+parsePolyApp :: Parser ExprTerm
+parsePolyApp = App' <$> allowedApp
+  <*> between (symbol "<") (symbol ">") (parseTypeTerm 0 `sepBy` symbol ",")
+
 parseTuple :: Parser ExprTerm
 parseTuple = do
   elems <- between (symbol "(") (symbol ")") $ allowedInArg `sepBy2` symbol ","
@@ -165,7 +169,7 @@ parseLet = Let <$> (symbol "let" *> parsePattern 0)
 parseTypeAlias :: Parser ExprTerm
 parseTypeAlias = TypeAlias <$> (symbol "type" *> ident)
   <*> optional
-    (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
+    (between (symbol "<") (symbol ">") $ parseTypePattern 0 `sepBy` symbol ",")
   <*> (symbol "=" *> parseTypeTerm 0)
   <*> (symbol ";" *> allowedAll)
 
@@ -183,6 +187,15 @@ parseKeywords :: Parser ExprTerm
 parseKeywords = choice
   [Keyword "check" . Right <$> (symbol "check" *> parseTypeTerm 0)]
 
+parseForall :: Parser ExprTerm
+parseForall = Forall
+  <$> (symbol "with"
+       *> between
+         (symbol "<")
+         (symbol ">")
+         (parseTypePattern 0 `sepBy` symbol ","))
+  <*> allowedBody
+
 -- | Type parser
 
 parseTypeTerm :: Int -> Parser TypeTerm
@@ -190,6 +203,7 @@ parseTypeTerm priority = choice
   $ drop priority
   $ try
   <$> [ try parseAppType
+      , try parseProjType
       , parseFunctionType
       , parseRecordType
       , parseTupleType
@@ -231,8 +245,14 @@ parseHoleType :: Parser TypeTerm
 parseHoleType = THole <$ symbol "?"
 
 parseAppType :: Parser TypeTerm
-parseAppType = TApp <$> parseTypeTerm 2
+parseAppType = TApp <$> parseTypeTerm 3
   <*> between (symbol "<") (symbol ">") (parseTypeTerm 0 `sepBy` symbol ",")
+
+parseProjType :: Parser TypeTerm
+parseProjType = do
+  first <- parseTypeTerm 3
+  path <- some $ symbol "." *> ident
+  pure $ foldl TProj first path
 
 -- | Pattern parser
 parsePattern :: Int -> Parser Pattern
@@ -268,6 +288,30 @@ parseAnnotPattern = PAnnot <$> parsePattern 1
 parseWildcardPattern :: Parser Pattern
 parseWildcardPattern = PWildcard <$ symbol "_"
 
+-- | Type Pattern parser
+parseTypePattern :: Int -> Parser TypePattern
+parseTypePattern priority = choice
+  $ drop priority
+  $ try <$> [parseTRecordPattern, parseTTuplePattern, parseTAtomPattern]
+
+parseTAtomPattern :: Parser TypePattern
+parseTAtomPattern = choice
+  [ try $ TPAtom <$> (symbol "flex" $> Flexible) <*> typeIdent
+  , TPAtom Rigid <$> typeIdent]
+
+parseTTuplePattern :: Parser TypePattern
+parseTTuplePattern = do
+  elems <- between (symbol "(") (symbol ")")
+    $ parseTypePattern 0 `sepBy` symbol ","
+  pure $ TPTuple elems
+
+parseTRecordPattern :: Parser TypePattern
+parseTRecordPattern = do
+  elems <- between (symbol "{") (symbol "}") $ parseField `sepBy` symbol ","
+  pure $ TPRecord elems
+  where
+    parseField = (,) <$> ident <*> (symbol ":" *> parseTypePattern 0)
+
 -- | Priority table
 
 allExpr :: [Parser ExprTerm]
@@ -276,34 +320,36 @@ allExpr = try
       , parseTypeAlias  -- 1
       , parseKeywords   -- 2
       , parseSequence   -- 3
-      , parseFunction   -- 4
-      , parseIf         -- 5
-      , parseRecord     -- 6
-      , parseTuple      -- 7
-      , parseProj       -- 8
-      , parseBinaryOp (operatorTable !! 6)   -- 9
-      , parseApp        -- 10
-      , parseLiteralExpr -- 11
-      , parseVariable  -- 12
-      , parseParen     -- 13
+      , parseForall     -- 4
+      , parseFunction   -- 5
+      , parseIf         -- 6
+      , parseRecord     -- 7
+      , parseTuple      -- 8
+      , parseProj       -- 9
+      , parseBinaryOp (operatorTable !! 6)   -- 10
+      , parseApp        -- 11
+      , parsePolyApp   -- 12
+      , parseLiteralExpr -- 13
+      , parseVariable  -- 14
+      , parseParen     -- 15
       ]
 
 allowedInArg :: Parser ExprTerm
 allowedInArg = choice
-  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 allowedProj :: Parser ExprTerm
-allowedProj = choice $ (allExpr !!) <$> [3, 6, 7, 11, 12, 13]
+allowedProj = choice $ (allExpr !!) <$> [3, 6, 7, 12, 13, 14, 15]
 
 allowedApp :: Parser ExprTerm
-allowedApp = choice $ (allExpr !!) <$> [3, 6, 7, 11, 12, 13]
+allowedApp = choice $ (allExpr !!) <$> [3, 6, 7, 13, 14, 15]
 
 allowedBody :: Parser ExprTerm
 allowedBody = choice
-  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+  $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 allowedArith :: Parser ExprTerm
-allowedArith = choice $ (allExpr !!) <$> [3, 6, 7, 8, 10, 11, 12, 13]
+allowedArith = choice $ (allExpr !!) <$> [3, 6, 7, 8, 11, 12, 13, 14, 15]
 
 allowedAll :: Parser ExprTerm
 allowedAll = choice allExpr

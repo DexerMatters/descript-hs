@@ -12,7 +12,7 @@ module TypeUtils where
 
 import           Utils (type (|->), Level, Index, (!!!), hashIntPair, tr
                       , zipWith')
-import           Syn (PrimitiveType, Pattern)
+import           Syn (PrimitiveType, Pattern, TypeDescriptor)
 import           Control.Monad.Except (ExceptT)
 import           Data.Sequence (Seq((:|>)), adjust, (|>))
 import qualified Data.Sequence as Seq
@@ -24,9 +24,11 @@ import qualified Utils as U
 
 -- | Evaluated Types
 
+
+
 data TypeValue = TVPrimitive PrimitiveType
                | TVLam [TypeValue] Level TypeValue
-               | TVVar Level Index
+               | TVVar TypeDescriptor Level Index
                | TVTop    -- Most general type
                | TVBot    -- Most specific type
                | TVArrow [TypeValue] TypeValue
@@ -41,12 +43,12 @@ instance Show Border where
 
 extractVars :: Seq (Seq [Border]) -> TypeValue -> [(TypeValue, [Border])]
 extractVars env = \case
-  TVVar lvl idx
+  TVVar td lvl idx
     | lvl == Seq.length env - 1
       -> let border = env !!! lvl !!! idx
              tops = concatMap (extractVars env . U.top) border
              bots = concatMap (extractVars env . U.bot) border
-         in (TVVar lvl idx, border):tops ++ bots
+         in (TVVar td lvl idx, border):tops ++ bots
   TVArrow args ret -> concatMap (extractVars env) args ++ extractVars env ret
   TVTuple elems -> concatMap (extractVars env) elems
   TVRecord fields -> concatMap (extractVars env . snd) fields
@@ -57,19 +59,24 @@ extractVars env = \case
 data TypeEnv = TypeEnv { bindings :: String |-> TypeValue
                        , level :: Level
                        , typeBindings :: Seq (Seq TypeValue)
-                       , constraints :: Seq (Seq [Border])
+                       , constraints :: Constraints
                        }
 
-data TypeFailure = UndefinedType TypeValue
-                 | UnboundVariable String
-                 | TypeMismatch TypeValue TypeValue
-                 | BadPattern Pattern TypeValue
-                 | BadConversion TypeValue TypeValue
-                 | MissingField String
-                 | TypeVariableOutOfScope Level Index
+data TypeFailure =
+    UndefinedType TypeValue
+  | UnboundVariable String
+  | TypeMismatch TypeValue TypeValue
+  | BadPattern Pattern TypeValue
+  | BadConversion TypeValue TypeValue
+  | MissingField String
+  | TypeVariableOutOfScope Level Index
+  | NotApplicable TypeValue
+  | NotProjectable TypeValue
   deriving Show
 
 type TypeResult a = Either TypeFailure a
+
+type Constraints = Seq (Seq [Border])
 
 -- | Monad for type checking
 

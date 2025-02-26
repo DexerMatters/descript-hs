@@ -4,30 +4,27 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
+
 module TypePretty where
 
-import           Syn (PrimitiveType, ExprTerm)
-import           Utils (Level, Index, (!!!), tr)
+import           Syn (PrimitiveType, ExprTerm, TypeDescriptor)
+import           Utils (Level, Index, (!!!))
 import           TypeUtils (TypeValue(..), TypeCheckT, Border, TypeFailure)
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import           Control.Arrow (second)
 import qualified Utils as U
-import           Data.Foldable (foldrM)
 import           Control.Monad (foldM)
 import           TypeElab (botmost, elaborate, topmost)
 import           Control.Monad.State (get, evalState)
-import           Control.Monad.State.Lazy (gets)
 import           Control.Monad.Except (runExceptT)
-import           Data.Maybe (fromJust)
 import           Pretty (Pretty, PrettyPrint(..), txt
                        , Color(Italics, Green, Bold), freshGreek, ( #> )
-                       , concatWith, RawStr, render)
-import           Debug.Trace (traceM)
+                       , concatWith, RawStr)
 
 data TypePtty = PttyPrimitive PrimitiveType
               | PttyLam [((Level, Index), BorderPtty)] TypePtty
-              | PttyVar Level Index
+              | PttyVar TypeDescriptor Level Index
               | PttyTop
               | PttyBot
               | PttyArrow [TypePtty] TypePtty
@@ -46,7 +43,7 @@ instance PrettyPrint BorderPtty (Int, Int) where
 
 instance PrettyPrint TypePtty (Int, Int) where
   pretty (PttyPrimitive pt) = txt $ show pt
-  pretty (PttyVar lvl idx) = Italics Green #> freshGreek (lvl, idx)
+  pretty (PttyVar _ lvl idx) = Italics Green #> freshGreek (lvl, idx)
   pretty PttyTop = Italics Green #> txt "⊤"
   pretty PttyBot = Italics Green #> txt "⊥"
   pretty (PttyArrow args ret) = txt "("
@@ -60,7 +57,7 @@ instance PrettyPrint TypePtty (Int, Int) where
     where
       parseFields = (\(l, t) -> txt l <> txt ": " <> pretty t) <$> fields
   pretty (PttyLam vars body) =
-    let args = parseVar . fst <$> tr vars
+    let args = parseVar . fst <$> vars
         hasWhere = flip any vars
           $ \(_, b) -> case b of
             U.Border PttyTop PttyBot -> False
@@ -84,11 +81,11 @@ quoteType' = \case
   TVTop -> pure PttyTop
   TVBot -> pure PttyBot
   TVPrimitive pt -> pure $ PttyPrimitive pt
-  TVVar lvl idx -> pure $ PttyVar lvl idx
+  TVVar td lvl idx -> pure $ PttyVar td lvl idx
   TVArrow args ret -> PttyArrow <$> mapM quoteType' args <*> quoteType' ret
   TVTuple elems -> PttyTuple <$> mapM quoteType' elems
   TVRecord fields -> PttyRecord <$> mapM (secondM quoteType') fields
-  TVLam vars lvl body -> PttyLam . concat <$> mapM (extractVars lvl) (tr vars)
+  TVLam vars lvl body -> PttyLam . concat <$> mapM (extractVars lvl) vars
     <*> quoteType' body
   where
     secondM f (a, b) = (a, ) <$> f b
@@ -110,7 +107,7 @@ extractVars
   :: Level -> TypeValue -> TypeCheckT m [((Level, Index), BorderPtty)]
 extractVars lvl tv = get
   >>= \env -> case tv of
-    TVVar lvl' idx
+    TVVar _ lvl' idx
       | lvl == lvl' -> do
         let borders = env !!! lvl !!! idx
         bots <- mapM (extractVars lvl') (U.bot <$> borders)

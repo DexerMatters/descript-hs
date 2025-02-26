@@ -40,7 +40,17 @@ data Pattern = PAtom String
              | PTuple [Pattern]
              | PRecord [(String, Pattern)]
              | PAnnot Pattern TypeTerm
+             | PAs Pattern String
              | PWildcard
+  deriving (Show)
+
+data TypeDescriptor = Rigid
+                    | Flexible
+  deriving (Eq, Show)
+
+data TypePattern = TPAtom TypeDescriptor String
+                 | TPTuple [TypePattern]
+                 | TPRecord [(String, TypePattern)]
   deriving (Show)
 
 data PrimitiveType = PrimInt
@@ -64,6 +74,7 @@ data TypeTerm =
   | TTuple [TypeTerm]            -- (t1, t2, ..., tn)
   | TRecord [(String, TypeTerm)] -- { l1: t1, l2: t2, ..., ln: tn }
   | TApp TypeTerm [TypeTerm]     -- t<t1, t2, ..., tn>
+  | TProj TypeTerm String        -- t.l
   | THole                        -- ?
     -- Intermediate types
   | TFix Int
@@ -80,6 +91,7 @@ instance Show TypeTerm where
   show (TRecord fields) =
     "{" ++ intercalate "," (map (\(l, t) -> l ++ ": " ++ show t) fields) ++ "}"
   show (TApp t tys) = show t ++ "<" ++ intercalate "," (map show tys) ++ ">"
+  show (TProj t l) = show t ++ "." ++ l
   show (TLam xs t) =
     "λ" ++ intercalate "," (map (\x -> "%" ++ show x) xs) ++ ". " ++ show t
   show (TSeq tys) = "{" ++ intercalate "," (map show tys) ++ "}"
@@ -122,8 +134,12 @@ data ExprTerm =
     -- | (e1, e2, ..., en) => e
     -- | (e1, e2, ..., en) t => e
   | Fun [Pattern] (Maybe TypeTerm) ExprTerm
+    -- | forall<tp1, tp2, ..., tpn> e
+  | Forall [TypePattern] ExprTerm
     -- | e1(e2, e3, ..., en)
   | App ExprTerm [ExprTerm]
+    -- | e<t1, t2, ..., tn>
+  | App' ExprTerm [TypeTerm]
     -- | let x = e1; e2
   | Let Pattern ExprTerm ExprTerm
     -- | if (e1) e2 else e3
@@ -134,7 +150,7 @@ data ExprTerm =
   | Keyword String (Either ExprTerm TypeTerm)
     -- | type t = t'; body
     -- | type t<x1, x2, ..., xn> = t'; body
-  | TypeAlias String (Maybe [String]) TypeTerm ExprTerm
+  | TypeAlias String (Maybe [TypePattern]) TypeTerm ExprTerm
     -- Special cases
   | Native
   deriving (Show)
