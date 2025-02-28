@@ -8,8 +8,8 @@
 
 module TypePretty where
 
-import           Syn (PrimitiveType, ExprTerm, TypeDescriptor)
-import           Utils (Level, Index, (!!!))
+import           Syn (PrimitiveType, TypeDescriptor, ExprTerm')
+import           Utils (Level, Index, (!!!), WithFI(..), fiEmpty)
 import           TypeUtils (TypeValue(..), TypeCheckT, Border, TypeFailure)
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -21,6 +21,7 @@ import           Control.Monad.Except (runExceptT)
 import           Pretty (Pretty, PrettyPrint(..), txt
                        , Color(Italics, Green, Bold), freshGreek, ( #> )
                        , concatWith, RawStr)
+import           Data.Bifunctor (Bifunctor(second))
 
 data TypePtty = PttyPrimitive PrimitiveType
               | PttyLam [((Level, Index), BorderPtty)] TypePtty
@@ -82,15 +83,19 @@ quoteType' = \case
   TVBot -> pure PttyBot
   TVPrimitive pt -> pure $ PttyPrimitive pt
   TVVar td lvl idx -> pure $ PttyVar td lvl idx
-  TVArrow args ret -> PttyArrow <$> mapM quoteType' args <*> quoteType' ret
-  TVTuple elems -> PttyTuple <$> mapM quoteType' elems
-  TVRecord fields -> PttyRecord <$> mapM (secondM quoteType') fields
-  TVLam vars lvl body -> PttyLam . concat <$> mapM (extractVars lvl) vars
-    <*> quoteType' body
+  TVArrow args ret -> PttyArrow <$> mapM quoteType' (val <$> args)
+    <*> quoteType' (val ret)
+  TVTuple elems -> PttyTuple <$> mapM quoteType' (val <$> elems)
+  TVRecord fields -> PttyRecord
+    <$> mapM (secondM quoteType') (second val <$> fields)
+  TVLam vars lvl body -> PttyLam . concat
+    <$> mapM (extractVars lvl) (val <$> vars)
+    <*> quoteType' (val body)
   where
     secondM f (a, b) = (a, ) <$> f b
 
-quoteType :: Seq (Seq [Border]) -> TypeValue -> Either TypeFailure TypePtty
+quoteType
+  :: Seq (Seq [Border]) -> TypeValue -> Either (WithFI TypeFailure) TypePtty
 quoteType env = flip evalState env . runExceptT . quoteType'
 
 normalizeBorder :: [Border] -> TypeCheckT m BorderPtty
@@ -98,9 +103,9 @@ normalizeBorder border = do
   let tops = map U.top border
       bots = map U.bot border
   -- The bottomost type of the tops
-  top' <- foldM botmost TVTop tops >>= quoteType'
+  top' <- foldM botmost (fiEmpty TVTop) (fiEmpty <$> tops) >>= quoteType' . val
   -- The topmost type of the bottoms
-  bot' <- foldM topmost TVBot bots >>= quoteType'
+  bot' <- foldM topmost (fiEmpty TVBot) (fiEmpty <$> bots) >>= quoteType' . val
   pure $ U.Border top' bot'
 
 extractVars
@@ -115,17 +120,19 @@ extractVars lvl tv = get
         p <- normalizeBorder borders
         pure $ ((lvl, idx), p):concat bots ++ concat tops
     TVArrow args ret -> do
-      args' <- mapM (extractVars lvl) args
-      ret' <- extractVars lvl ret
+      args' <- mapM (extractVars lvl) (val <$> args)
+      ret' <- extractVars lvl (val ret)
       pure $ concat args' ++ ret'
-    TVTuple elems -> concat <$> mapM (extractVars lvl) elems
-    TVRecord fields -> concat <$> mapM (extractVars lvl . snd) fields
+    TVTuple elems -> concat <$> mapM (extractVars lvl) (val <$> elems)
+    TVRecord fields -> concat
+      <$> mapM (extractVars lvl . snd) (second val <$> fields)
     _x -> pure []
 
-testInferType :: ExprTerm -> Either TypeFailure (Pretty (Int, Int) RawStr)
+testInferType
+  :: ExprTerm' -> Either (WithFI TypeFailure) (Pretty (Int, Int) RawStr)
 testInferType expr = evalState (runExceptT m) Seq.Empty
   where
     m = do
       tv <- elaborate [] expr
-      quoted <- quoteType' tv
+      quoted <- quoteType' (val tv)
       pure $ Green #> pretty quoted

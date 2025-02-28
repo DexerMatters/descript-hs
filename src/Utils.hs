@@ -8,7 +8,7 @@
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE DeriveFoldable #-}
 
 module Utils where
 
@@ -16,11 +16,10 @@ import           Debug.Trace
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import           Data.Maybe (fromMaybe)
-import           GHC.Base (liftA2)
+import           GHC.Base (liftA2, maxInt)
 import           Control.Monad (when, unless)
 import qualified Data.List as List
 import           Data.Function (on)
-import           Data.Functor.Contravariant (Contravariant(contramap))
 
 -- | Auxiliary functions
 
@@ -31,6 +30,30 @@ type Ref = Int
 type Level = Int
 
 type Index = Int
+
+data FI = FI { start :: Int, end :: Int }
+  deriving (Eq, Show)
+
+instance Semigroup FI where
+  FI s e <> FI s' e' = FI (min s s') (max e e')
+
+instance Monoid FI where
+  mempty = FI maxInt 0
+
+data WithFI a = WithFI { fi :: FI, val :: a }
+  deriving (Eq, Functor, Show, Foldable)
+
+pattern (:?>) :: FI -> a -> WithFI a
+pattern f :?> a = WithFI f a
+
+infixl 5 :?>
+
+instance Traversable WithFI where
+  traverse f (i :?> a) = (i :?>) <$> f a
+  traverse _ _ = error "Unreachable"
+
+fiEmpty :: a -> WithFI a
+fiEmpty = (FI maxInt 0 :?>)
 
 data Border a = Border { top :: a, bot :: a }
   deriving (Functor)
@@ -119,3 +142,7 @@ instance Monad (Lazy b) where
   return = pure
 
   Lazy f >>= g = Lazy $ \b -> (force $ g (f b)) b
+
+type ($) a b = a b
+
+infixr 0 $

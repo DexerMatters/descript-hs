@@ -2,19 +2,25 @@
 
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
+{-# LANGUAGE ExplicitNamespaces #-}
+{-# LANGUAGE TypeOperators #-}
+
 module Parser where
 
 import           Text.Megaparsec (choice, manyTill, anySingle, Parsec, between
-                                , sepBy, MonadParsec(try, eof), optional)
+                                , sepBy, MonadParsec(try, eof), optional
+                                , getOffset)
 import           Syn (Literal(..), ExprTerm(..), Pattern(..), TypeTerm(..)
                     , PrimitiveType(..), Statement(..), BinOp(..), operatorTable
-                    , TypePattern(..), TypeDescriptor(..))
+                    , TypePattern(..), TypeDescriptor(..), ExprTerm', TypeTerm'
+                    , Pattern', TypePattern')
 import           GHC.Base (Alternative(..))
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import           Data.Void (Void)
 import           Data.Functor (($>))
-import           Data.Foldable (Foldable(toList))
+import           Data.Foldable (Foldable(toList, fold))
+import           Utils (type ($), WithFI(..), FI(..))
 
 type Parser = Parsec Void String
 
@@ -32,6 +38,20 @@ preserved = [ "true"
 
 ws :: Parser ()
 ws = L.space space1 (L.skipLineComment "//") (L.skipBlockComment "/*" "*/")
+
+withFI :: Parser a -> Parser (WithFI a)
+withFI p = do
+  start <- getOffset
+  v <- p
+  end <- getOffset
+  pure $ WithFI (FI start end) v
+
+withFI' :: Parser (WithFI a) -> Parser (WithFI a)
+withFI' p = do
+  start <- getOffset
+  WithFI _ v <- p
+  end <- getOffset
+  pure $ WithFI (FI start end) v
 
 lexeme :: Parser String -> Parser String
 lexeme = L.lexeme ws
@@ -63,132 +83,145 @@ parseLiteral = choice
   , LUnit <$ string "unit"
   , LString <$> lexeme (char '"' *> manyTill anySingle (char '"'))]
 
-binOp :: BinOp -> ExprTerm -> ExprTerm -> ExprTerm
-binOp op a b = App (Var (binOpName op)) [a, b]
+binOp :: WithFI BinOp -> ExprTerm' -> ExprTerm' -> ExprTerm'
+binOp op a b = WithFI (fi a <> fi b)
+  $ App (WithFI (fi op) $ Var (binOpName (val op))) [a, b]
 
 -- | Top-level parser
 
-parseProgram :: Parser [Statement]
-parseProgram = manyTill parseStatement eof
+-- parseProgram :: Parser [Statement]
+-- parseProgram = manyTill parseStatement eof
 
--- | Statement parser
+-- -- | Statement parser
 
-parseStatement :: Parser Statement
-parseStatement =
-  choice [parseFunDecl, parseLetDecl, parseTypeDecl, parseEnumDecl]
+-- parseStatement :: Parser Statement
+-- parseStatement =
+--   choice [parseFunDecl, parseLetDecl, parseTypeDecl, parseEnumDecl]
 
-parseFunDecl :: Parser Statement
-parseFunDecl = FunDecl <$> (symbol "function" *> ident)
-  <*> between (symbol "(") (symbol ")") (parsePattern 0 `sepBy` symbol ",")
-  <*> optional (symbol ":" *> parseTypeTerm 0)
-  <*> ((symbol "-- native" $> Native)
-       <|> (symbol "{" *> allowedAll <* symbol "}"))
+-- parseFunDecl :: Parser Statement
+-- parseFunDecl = FunDecl <$> (symbol "function" *> ident)
+--   <*> between (symbol "(") (symbol ")") (parsePattern 0 `sepBy` symbol ",")
+--   <*> optional (symbol ":" *> parseTypeTerm 0)
+--   <*> ((symbol "-- native" $> Native)
+--        <|> (symbol "{" *> allowedAll <* symbol "}"))
 
-parseLetDecl :: Parser Statement
-parseLetDecl = LetDecl <$> (symbol "let" *> ident)
-  <*> optional (symbol ":" *> parseTypeTerm 0)
-  <*> (symbol "=" *> allowedBody)
+-- parseLetDecl :: Parser Statement
+-- parseLetDecl = LetDecl <$> (symbol "let" *> ident)
+--   <*> optional (symbol ":" *> parseTypeTerm 0)
+--   <*> (symbol "=" *> allowedBody)
 
-parseTypeDecl :: Parser Statement
-parseTypeDecl = TypeDecl <$> (symbol "type" *> typeIdent)
-  <*> optional
-    (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
-  <*> (symbol "=" *> parseTypeTerm 0)
+-- parseTypeDecl :: Parser Statement
+-- parseTypeDecl = TypeDecl <$> (symbol "type" *> typeIdent)
+--   <*> optional
+--     (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
+--   <*> (symbol "=" *> parseTypeTerm 0)
 
-parseEnumDecl :: Parser Statement
-parseEnumDecl = EnumDecl <$> (symbol "enum" *> typeIdent)
-  <*> optional
-    (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
-  <*> (symbol "{" *> parseEnumVariant `sepBy` symbol "," <* symbol "}")
-  where
-    parseEnumVariant = (,) <$> ident
-      <*> fmap
-        (concat . toList)
-        (optional
-           (between (symbol "(") (symbol ")")
-            $ parseTypeTerm 0 `sepBy` symbol ","))
+-- parseEnumDecl :: Parser Statement
+-- parseEnumDecl = EnumDecl <$> (symbol "enum" *> typeIdent)
+--   <*> optional
+--     (between (symbol "<") (symbol ">") $ typeIdent `sepBy` symbol ",")
+--   <*> (symbol "{" *> parseEnumVariant `sepBy` symbol "," <* symbol "}")
+--   where
+--     parseEnumVariant = (,) <$> ident
+--       <*> fmap
+--         (concat . toList)
+--         (optional
+--            (between (symbol "(") (symbol ")")
+--             $ parseTypeTerm 0 `sepBy` symbol ","))
 
 -- | Expression parser
 
 
-parseParen :: Parser ExprTerm
-parseParen = between (symbol "(") (symbol ")") allowedAll
+parseParen :: Parser ExprTerm'
+parseParen = withFI' $ between (symbol "(") (symbol ")") allowedAll
 
-parseVariable :: Parser ExprTerm
-parseVariable = Var <$> ident
+parseVariable :: Parser ExprTerm'
+parseVariable = withFI $ Var <$> ident
 
-parsePolyApp :: Parser ExprTerm
-parsePolyApp = App' <$> allowedApp
+parsePolyApp :: Parser $ ExprTerm'
+parsePolyApp = withFI
+  $ App' <$> allowedApp
   <*> between (symbol "<") (symbol ">") (parseTypeTerm 0 `sepBy` symbol ",")
 
-parseTuple :: Parser ExprTerm
-parseTuple = do
-  elems <- between (symbol "(") (symbol ")") $ allowedInArg `sepBy2` symbol ","
-  pure $ Tuple elems
+parseTuple :: Parser ExprTerm'
+parseTuple = withFI
+  $ do
+    elems <- between (symbol "(") (symbol ")")
+      $ allowedInArg `sepBy2` symbol ","
+    pure $ Tuple elems
 
-parseLiteralExpr :: Parser ExprTerm
-parseLiteralExpr = Lit <$> parseLiteral
+parseLiteralExpr :: Parser ExprTerm'
+parseLiteralExpr = withFI $ Lit <$> parseLiteral
 
-parseBinaryOp :: BinOp -> Parser ExprTerm
-parseBinaryOp op = sepBy2 allowedArith (symbol $ binOpSign op)
+parseBinaryOp :: BinOp -> Parser ExprTerm'
+parseBinaryOp op = withFI'
+  $ do
+    sepBy2 allowedArith (withFI $ symbol $ binOpSign op)
   >>= \case
     [x]    -> pure x
-    (x:xs) -> pure $ foldl (binOp op) x xs
+    (x:xs) -> pure $ foldl (binOp (WithFI (FI 0 0) op)) x xs
     _      -> fail "impossible"
 
-parseRecord :: Parser ExprTerm
-parseRecord = Record
+parseRecord :: Parser ExprTerm'
+parseRecord = withFI
+  $ Record
   <$> between (symbol "{") (symbol "}") (parseField `sepBy` symbol ",")
   where
     parseField = (,) <$> ident <*> (symbol "=" *> allowedBody)
 
-parseFunction :: Parser ExprTerm
-parseFunction = Fun
+parseFunction :: Parser ExprTerm'
+parseFunction = withFI
+  $ Fun
   <$> between (symbol "(") (symbol ")") (parsePattern 0 `sepBy` symbol ",")
   <*> optional (parseTypeTerm 0)
   <*> (symbol "=>" *> allowedBody)
 
-parseApp :: Parser ExprTerm
-parseApp = do
-  first <- allowedApp
-  rest <- some
-    $ between (symbol "(") (symbol ")") (allowedInArg `sepBy` symbol ",")
-  pure $ foldl App first rest
+parseApp :: Parser ExprTerm'
+parseApp = withFI'
+  $ do
+    first <- allowedApp
+    rest <- some
+      $ between (symbol "(") (symbol ")") (allowedInArg `sepBy` symbol ",")
+    pure $ foldl (\a b -> WithFI (fold $ fi a:fmap fi b) $ App a b) first rest
 
-parseIf :: Parser ExprTerm
-parseIf = If
-  <$> (symbol "if" *> between (symbol "(") (symbol ")") allowedInArg)
+parseIf :: Parser ExprTerm'
+parseIf = withFI
+  $ If <$> (symbol "if" *> between (symbol "(") (symbol ")") allowedInArg)
   <*> allowedBody
   <*> (symbol "else" *> allowedBody)
 
-parseLet :: Parser ExprTerm
-parseLet = Let <$> (symbol "let" *> parsePattern 0)
+parseLet :: Parser ExprTerm'
+parseLet = withFI
+  $ Let <$> (symbol "let" *> parsePattern 0)
   <*> (symbol "=" *> allowedBody)
   <*> (symbol ";" *> allowedAll)
 
-parseTypeAlias :: Parser ExprTerm
-parseTypeAlias = TypeAlias <$> (symbol "type" *> ident)
+parseTypeAlias :: Parser ExprTerm'
+parseTypeAlias = withFI
+  $ TypeAlias <$> (symbol "type" *> ident)
   <*> optional
     (between (symbol "<") (symbol ">") $ parseTypePattern 0 `sepBy` symbol ",")
   <*> (symbol "=" *> parseTypeTerm 0)
   <*> (symbol ";" *> allowedAll)
 
-parseProj :: Parser ExprTerm
-parseProj = do
-  first <- allowedProj
-  path <- some $ symbol "." *> ident
-  pure $ foldl Proj first path
+parseProj :: Parser ExprTerm'
+parseProj = withFI'
+  $ do
+    first <- allowedProj
+    path <- some $ symbol "." *> ident
+    pure $ foldl (\a b -> WithFI (fi a) $ Proj a b) first path
 
-parseSequence :: Parser ExprTerm
-parseSequence = Seq
-  <$> between (symbol "{") (symbol "}") (allowedAll `sepBy` symbol ";")
+parseSequence :: Parser ExprTerm'
+parseSequence = withFI
+  $ Seq <$> between (symbol "{") (symbol "}") (allowedAll `sepBy` symbol ";")
 
-parseKeywords :: Parser ExprTerm
-parseKeywords = choice
-  [Keyword "check" . Right <$> (symbol "check" *> parseTypeTerm 0)]
+parseKeywords :: Parser ExprTerm'
+parseKeywords = withFI
+  $ choice [Keyword "check" . Right <$> (symbol "check" *> parseTypeTerm 0)]
 
-parseForall :: Parser ExprTerm
-parseForall = Forall
+parseForall :: Parser ExprTerm'
+parseForall = withFI
+  $ Forall
   <$> (symbol "with"
        *> between
          (symbol "<")
@@ -198,7 +231,7 @@ parseForall = Forall
 
 -- | Type parser
 
-parseTypeTerm :: Int -> Parser TypeTerm
+parseTypeTerm :: Int -> Parser TypeTerm'
 parseTypeTerm priority = choice
   $ drop priority
   $ try
@@ -212,50 +245,56 @@ parseTypeTerm priority = choice
       , parsePrimitiveType
       , parseTypeParen]
 
-parseTypeParen :: Parser TypeTerm
-parseTypeParen = between (symbol "(") (symbol ")") $ parseTypeTerm 0
+parseTypeParen :: Parser TypeTerm'
+parseTypeParen = withFI' $ between (symbol "(") (symbol ")") $ parseTypeTerm 0
 
-parsePrimitiveType :: Parser TypeTerm
-parsePrimitiveType = TPrimitive
+parsePrimitiveType :: Parser TypeTerm'
+parsePrimitiveType = withFI
+  $ TPrimitive
   <$> choice
     [ symbol "int" $> PrimInt
     , symbol "bool" $> PrimBool
     , symbol "unit" $> PrimUnit
     , symbol "str" $> PrimString]
 
-parseTupleType :: Parser TypeTerm
-parseTupleType = TTuple
+parseTupleType :: Parser TypeTerm'
+parseTupleType = withFI
+  $ TTuple
   <$> between (symbol "(") (symbol ")") (parseTypeTerm 0 `sepBy` symbol ",")
 
-parseRecordType :: Parser TypeTerm
-parseRecordType = TRecord
+parseRecordType :: Parser TypeTerm'
+parseRecordType = withFI
+  $ TRecord
   <$> between (symbol "{") (symbol "}") (parseField `sepBy` symbol ",")
   where
     parseField = (,) <$> ident <*> (symbol ":" *> parseTypeTerm 0)
 
-parseFunctionType :: Parser TypeTerm
-parseFunctionType = TArrow
+parseFunctionType :: Parser TypeTerm'
+parseFunctionType = withFI
+  $ TArrow
   <$> between (symbol "(") (symbol ")") (parseTypeTerm 0 `sepBy` symbol ",")
   <*> (symbol "->" *> parseTypeTerm 0)
 
-parseFreeType :: Parser TypeTerm
-parseFreeType = TVar <$> typeIdent
+parseFreeType :: Parser TypeTerm'
+parseFreeType = withFI $ TVar <$> typeIdent
 
-parseHoleType :: Parser TypeTerm
-parseHoleType = THole <$ symbol "?"
+parseHoleType :: Parser TypeTerm'
+parseHoleType = withFI $ THole <$ symbol "?"
 
-parseAppType :: Parser TypeTerm
-parseAppType = TApp <$> parseTypeTerm 3
+parseAppType :: Parser TypeTerm'
+parseAppType = withFI
+  $ TApp <$> parseTypeTerm 3
   <*> between (symbol "<") (symbol ">") (parseTypeTerm 0 `sepBy` symbol ",")
 
-parseProjType :: Parser TypeTerm
-parseProjType = do
-  first <- parseTypeTerm 3
-  path <- some $ symbol "." *> ident
-  pure $ foldl TProj first path
+parseProjType :: Parser TypeTerm'
+parseProjType = withFI'
+  $ do
+    first <- parseTypeTerm 3
+    path <- some $ symbol "." *> ident
+    pure $ foldl (\a b -> WithFI (fi a) $ TProj a b) first path
 
 -- | Pattern parser
-parsePattern :: Int -> Parser Pattern
+parsePattern :: Int -> Parser Pattern'
 parsePattern priority = choice
   $ drop priority
   $ try
@@ -265,56 +304,61 @@ parsePattern priority = choice
       , parseWildcardPattern
       , parseAtomPattern]
 
-parseAtomPattern :: Parser Pattern
-parseAtomPattern = PAtom <$> ident
+parseAtomPattern :: Parser Pattern'
+parseAtomPattern = withFI $ PAtom <$> ident
 
-parseTuplePattern :: Parser Pattern
-parseTuplePattern = do
-  elems <- between (symbol "(") (symbol ")")
-    $ parsePattern 0 `sepBy` symbol ","
-  pure $ PTuple elems
+parseTuplePattern :: Parser Pattern'
+parseTuplePattern = withFI
+  $ do
+    elems <- between (symbol "(") (symbol ")")
+      $ parsePattern 0 `sepBy` symbol ","
+    pure $ PTuple elems
 
-parseRecordPattern :: Parser Pattern
-parseRecordPattern = do
-  elems <- between (symbol "{") (symbol "}") $ parseField `sepBy` symbol ","
-  pure $ PRecord elems
+parseRecordPattern :: Parser Pattern'
+parseRecordPattern = withFI
+  $ do
+    elems <- between (symbol "{") (symbol "}") $ parseField `sepBy` symbol ","
+    pure $ PRecord elems
   where
     parseField = (,) <$> ident <*> (symbol "=" *> parsePattern 0)
 
-parseAnnotPattern :: Parser Pattern
-parseAnnotPattern = PAnnot <$> parsePattern 1
-  <*> (symbol ":" *> parseTypeTerm 0)
+parseAnnotPattern :: Parser Pattern'
+parseAnnotPattern = withFI
+  $ PAnnot <$> parsePattern 1 <*> (symbol ":" *> parseTypeTerm 0)
 
-parseWildcardPattern :: Parser Pattern
-parseWildcardPattern = PWildcard <$ symbol "_"
+parseWildcardPattern :: Parser Pattern'
+parseWildcardPattern = withFI $ PWildcard <$ symbol "_"
 
 -- | Type Pattern parser
-parseTypePattern :: Int -> Parser TypePattern
+parseTypePattern :: Int -> Parser TypePattern'
 parseTypePattern priority = choice
   $ drop priority
   $ try <$> [parseTRecordPattern, parseTTuplePattern, parseTAtomPattern]
 
-parseTAtomPattern :: Parser TypePattern
-parseTAtomPattern = choice
-  [ try $ TPAtom <$> (symbol "flex" $> Flexible) <*> typeIdent
-  , TPAtom Rigid <$> typeIdent]
+parseTAtomPattern :: Parser TypePattern'
+parseTAtomPattern = withFI
+  $ choice
+    [ try $ TPAtom <$> (symbol "flex" $> Flexible) <*> typeIdent
+    , TPAtom Rigid <$> typeIdent]
 
-parseTTuplePattern :: Parser TypePattern
-parseTTuplePattern = do
-  elems <- between (symbol "(") (symbol ")")
-    $ parseTypePattern 0 `sepBy` symbol ","
-  pure $ TPTuple elems
+parseTTuplePattern :: Parser TypePattern'
+parseTTuplePattern = withFI
+  $ do
+    elems <- between (symbol "(") (symbol ")")
+      $ parseTypePattern 0 `sepBy` symbol ","
+    pure $ TPTuple elems
 
-parseTRecordPattern :: Parser TypePattern
-parseTRecordPattern = do
-  elems <- between (symbol "{") (symbol "}") $ parseField `sepBy` symbol ","
-  pure $ TPRecord elems
+parseTRecordPattern :: Parser TypePattern'
+parseTRecordPattern = withFI
+  $ do
+    elems <- between (symbol "{") (symbol "}") $ parseField `sepBy` symbol ","
+    pure $ TPRecord elems
   where
     parseField = (,) <$> ident <*> (symbol ":" *> parseTypePattern 0)
 
 -- | Priority table
 
-allExpr :: [Parser ExprTerm]
+allExpr :: [Parser ExprTerm']
 allExpr = try
   <$> [ parseLet        -- 0
       , parseTypeAlias  -- 1
@@ -334,22 +378,22 @@ allExpr = try
       , parseParen     -- 15
       ]
 
-allowedInArg :: Parser ExprTerm
+allowedInArg :: Parser ExprTerm'
 allowedInArg = choice
   $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
-allowedProj :: Parser ExprTerm
+allowedProj :: Parser ExprTerm'
 allowedProj = choice $ (allExpr !!) <$> [3, 6, 7, 12, 13, 14, 15]
 
-allowedApp :: Parser ExprTerm
+allowedApp :: Parser ExprTerm'
 allowedApp = choice $ (allExpr !!) <$> [3, 6, 7, 13, 14, 15]
 
-allowedBody :: Parser ExprTerm
+allowedBody :: Parser ExprTerm'
 allowedBody = choice
   $ (allExpr !!) <$> [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
-allowedArith :: Parser ExprTerm
+allowedArith :: Parser ExprTerm'
 allowedArith = choice $ (allExpr !!) <$> [3, 6, 7, 8, 11, 12, 13, 14, 15]
 
-allowedAll :: Parser ExprTerm
+allowedAll :: Parser ExprTerm'
 allowedAll = choice allExpr

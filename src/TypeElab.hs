@@ -10,32 +10,29 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MonoLocalBinds #-}
 
+
 module TypeElab where
 
 import           Syn (ExprTerm(..), Literal(..), PrimitiveType(..), Pattern(..)
-                    , TypeTerm(..), TypeDescriptor(..), TypePattern(..))
+                    , TypeTerm(..), TypeDescriptor(..), TypePattern(..), ExprTerm', TypeTerm', Pattern', TypePattern')
 import           Control.Monad.RWS (gets)
 import           Control.Monad (mapAndUnzipM, zipWithM, forM, zipWithM_, forM_
                               , unless)
 import           TypeUtils (TypeValue(..), TypeFailure(..), TypeCheckT, uplevel
                           , newVar, getCurrentLevel, putBorder, getBorder
-                          , downlevel, setBorder)
-import           Utils
+                          , downlevel, setBorder, TypeValue')
+import           Utils hiding (info)
 import           Control.Monad.Error.Class (MonadError(throwError))
 import           Data.Bool (bool)
 import           Control.Applicative (Applicative(liftA2))
-import qualified Data.Sequence as Seq
-import           Control.Monad.State (evalState)
-import           Control.Monad.Except (runExceptT)
 import           Prelude hiding (exp)
-import           Data.Functor.Identity
-import Debug.Trace (traceM)
+import Data.Functor (($>))
 
 -- | Type Elaboration
 elaborate :: String |-> TypeValue -- ^ Bindings
-          -> ExprTerm             -- ^ Expression
-          -> TypeCheckT m TypeValue
-elaborate bindings = \case
+          -> ExprTerm'             -- ^ Expression
+          -> TypeCheckT m (WithFI TypeValue)
+elaborate bindings fiExp = forM fiExp $ \case
   Lit l -> TVPrimitive
     <$> case l of
       LInt _    -> pure PrimInt
@@ -44,7 +41,7 @@ elaborate bindings = \case
       LUnit     -> pure PrimUnit
   Var x -> case lookup x bindings of
     Just t  -> pure t
-    Nothing -> throwError (UnboundVariable x)
+    Nothing -> throwError (info :?> UnboundVariable x)
   Tuple es -> TVTuple <$> mapM (elaborate bindings) es
   Record fs -> TVRecord <$> mapM (\(f, e) -> (f, ) <$> elaborate bindings e) fs
   Fun ps ret body -> do
@@ -58,66 +55,67 @@ elaborate bindings = \case
       Just ret' -> do
         retT' <- elaborateType bindings'' ret'
         bodyT `isSubtypeOf` retT'
-          >>= flip unless (throwError (BadConversion bodyT retT'))
+          >>= flip unless (throwError (info :?> BadConversion bodyT retT'))
         unify bodyT retT'
         pure retT'
       Nothing   -> pure bodyT
-    pure $ bool (TVArrow ts retT) (TVLam ts level $ TVArrow ts retT) isPoly
+    pure $ bool (TVArrow ts retT) (TVLam ts level $ info :?> TVArrow ts retT) isPoly
   App f args -> do
     fT <- elaborate bindings f
     argsT <- mapM (elaborate bindings) args
     let aux = \case
-          TVArrow ts ret -> do
+          _ :?> TVArrow ts ret -> do
             zipWithM_
               (\t input -> input `isSubtypeOf` t
-               >>= flip unless (throwError (TypeMismatch input t)))
+               >>= flip unless (throwError (fi input :?> TypeMismatch input t)))
               ts
               argsT
             zipWithM_ unify ts argsT
             pure ret
-          TVLam ts lvl tv -> do
+          _ :?> TVLam ts lvl tv -> do
             deducedSet <- concat <$> zipWithM (deduce lvl) ts argsT
             reduced <- reduce lvl (map snd (nubAndSortAssoc deducedSet)) tv
             aux reduced
-          TVVar Flexible lvl idx -> do
-            (TVVar Flexible lvl -> var) <- newVar lvl
-            unify (TVVar Flexible lvl idx) (TVArrow argsT var)
+          i :?> TVVar Flexible lvl idx -> do
+            ((i :?>) . TVVar Flexible lvl -> var) <- newVar lvl
+            unify (i :?> TVVar Flexible lvl idx) (i :?> TVArrow argsT var)
             pure var
-          _ -> throwError (TypeMismatch fT (TVArrow [] TVBot))
-    aux fT
+          i :?> tv -> throwError (i :?> NotApplicable (i :?> tv))
+          _ -> error "Cannot happen"
+    val <$> aux fT
   App' f args -> do
     argsT <- mapM (elaborateType bindings) args
     fT <- elaborate bindings f
     case fT of
-      TVLam ts lvl tv -> do
+      _ :?> TVLam ts lvl tv -> do
         deducedSet <- concat <$> zipWithM (deduce lvl) ts argsT
-        reduce lvl (map snd (nubAndSortAssoc deducedSet)) tv
-      _ -> throwError (NotApplicable fT)
+        val <$> reduce lvl (map snd (nubAndSortAssoc deducedSet)) tv
+      _ -> throwError (fi f :?> NotApplicable fT)
   Proj e label -> do
     eT <- elaborate bindings e
     case eT of
-      TVRecord fs -> case lookup label fs of
-        Just t  -> pure t
-        Nothing -> throwError (MissingField label)
-      TVVar Flexible lvl _ -> do
+      _ :?> TVRecord fs -> case lookup label fs of
+        Just t  -> pure $ val t
+        Nothing -> throwError (info :?> MissingField label)
+      i :?> TVVar Flexible lvl _ -> do
         (TVVar Flexible lvl -> var) <- newVar lvl
-        unify eT (TVRecord [(label, var)])
+        unify eT (i :?> TVRecord [(label, i :?> var)])
         pure var
-      _ -> throwError (TypeMismatch eT (TVRecord []))
-  Seq es -> last <$> mapM (elaborate bindings) es
+      _ -> throwError (info :?> NotProjectable eT)
+  Seq es -> val . last <$> mapM (elaborate bindings) es
   Let p e body -> do
     eT <- elaborate bindings e
     bindings' <- checkPattern bindings p eT
-    elaborate (bindings <> bindings') body
+    val <$> elaborate (bindings <> bindings') body
   TypeAlias name Nothing t body -> do
     tv <- elaborateType bindings t
-    elaborate (bindings <> [(name, tv)]) body
+    val <$> elaborate (bindings <> [(name, val tv)]) body
   TypeAlias name (Just tvars) t body -> do
     lvl <- uplevel
     (tvars', concat -> (bindings <>) -> bindings')
       <- mapAndUnzipM (inferTypePattern bindings) tvars
     tv <- elaborateType bindings' t
-    elaborate (bindings <> [(name, TVLam tvars' lvl tv)]) body
+    val <$> elaborate (bindings <> [(name, TVLam tvars' lvl tv)]) body
   Forall tvars body -> do
     lvl <- uplevel
     (tvars', concat -> (<> bindings) -> bindings')
@@ -128,23 +126,24 @@ elaborate bindings = \case
     condT <- elaborate bindings cond
     tT <- elaborate bindings t
     fT <- elaborate bindings f
-    let boolT = TVPrimitive PrimBool
+    let boolT = info :?> TVPrimitive PrimBool
     -- The condition must be a boolean
     condT `isSubtypeOf` boolT
-      >>= flip unless (throwError (TypeMismatch condT boolT))
+      >>= flip unless (throwError (fi condT :?> TypeMismatch condT boolT))
     unify condT boolT
     -- The types of the branches must be the same
     liftA2 (&&) (tT `isSubtypeOf` fT) (fT `isSubtypeOf` tT)
-      >>= flip unless (throwError (TypeMismatch tT fT))
-    pure tT
+      >>= flip unless (throwError (fi fT <> fi tT :?> TypeMismatch tT fT))
+    pure $ val tT
   _ -> error "Not implemented"
+  where info = fi fiExp
 
 elaborateType :: String |-> TypeValue -- ^ Bindings
-              -> TypeTerm             -- ^ Type
-              -> TypeCheckT m TypeValue
-elaborateType bindings = \case
+              -> TypeTerm'             -- ^ Type
+              -> TypeCheckT m TypeValue'
+elaborateType bindings fiTy = forM fiTy $ \case
   TPrimitive p -> pure (TVPrimitive p)
-  TVar x -> maybe (throwError (UnboundVariable x)) pure (lookup x bindings)
+  TVar x -> maybe (throwError (info :?> UnboundVariable x)) pure (lookup x bindings)
   TTuple ts -> TVTuple <$> mapM (elaborateType bindings) ts
   TRecord fs -> TVRecord
     <$> mapM (\(f, t) -> (f, ) <$> elaborateType bindings t) fs
@@ -153,95 +152,93 @@ elaborateType bindings = \case
   TLam tvars body -> do
     lvl <- uplevel
     is <- mapM (const (newVar lvl)) tvars
-    let vars = TVVar Flexible lvl <$> is
-        bindings' = bindings <> zip tvars vars
+    let vars = WithFI info . TVVar Flexible lvl <$> is
+        bindings' = bindings <> zip tvars (val <$> vars)
     TVLam vars lvl <$> elaborateType bindings' body
   TApp t ts -> do
     t' <- elaborateType bindings t
     ts' <- mapM (elaborateType bindings) ts
     case t' of
-      TVLam tvars lvl body -> do
+      _ :?> TVLam tvars lvl body -> do
         deducedSet <- concat <$> zipWithM (deduce lvl) tvars ts'
-        reduce lvl (map snd (nubAndSortAssoc deducedSet)) body
-      _ -> throwError (NotApplicable t')
+        val <$> reduce lvl (map snd (nubAndSortAssoc deducedSet)) body
+      _ -> throwError (fi t' :?> NotApplicable t')
   TProj t l -> do
     t' <- elaborateType bindings t
     case t' of
-      TVRecord fs -> case lookup l fs of
-        Just t'' -> pure t''
-        Nothing  -> throwError (MissingField l)
-      _           -> throwError (NotProjectable t')
+      _ :?> TVRecord fs -> case lookup l fs of
+        Just t'' -> pure $ val t''
+        Nothing  -> throwError (info :?> MissingField l)
+      _           -> throwError (fi t' :?> NotProjectable t')
   _ -> error "Not implemented"
+  where info = fi fiTy
 
 inferPattern :: String |-> TypeValue
-             -> Pattern
-             -> TypeCheckT m (TypeValue, String |-> TypeValue)
-inferPattern env = \case
+             -> Pattern'
+             -> TypeCheckT m (TypeValue', String |-> TypeValue)
+inferPattern env (WithFI info _p) = case _p of
   PAtom x    -> do
     lvl <- getCurrentLevel
     i <- newVar lvl
-    pure $ TVVar Flexible lvl i :@: [(x, TVVar Flexible lvl i)]
+    pure (info :?> TVVar Flexible lvl i, [(x, TVVar Flexible lvl i)])
   PTuple ps  -> do
     (ts, bindings) <- mapAndUnzipM (inferPattern env) ps
-    pure (TVTuple ts, concat bindings)
+    pure (info :?> TVTuple ts, concat bindings)
   PRecord fs -> do
     (ts, bindings) <- mapAndUnzipM (inferPattern env) (snd <$> fs)
-    pure (TVRecord (zip (fst <$> fs) ts), concat bindings)
+    pure (info :?> TVRecord (zip (fst <$> fs) ts), concat bindings)
   PWildcard  -> do
     lvl <- getCurrentLevel
     i <- newVar lvl
-    pure $ TVVar Flexible lvl i :@: []
+    pure $ info :?> TVVar Flexible lvl i :@: []
   PAnnot p t -> do
     t' <- elaborateType env t
     bindings' <- checkPattern env p t'
     pure (t', bindings')
   PAs p x    -> do
     (t, bindings) <- inferPattern env p
-    pure (t, (x, t):bindings)
+    pure (t, (x, val t):bindings)
 
 checkPattern :: String |-> TypeValue
-             -> Pattern
-             -> TypeValue
+             -> Pattern'
+             -> TypeValue'
              -> TypeCheckT m (String |-> TypeValue)
-checkPattern env = curry
-  $ \case
-    (PAtom x, ty) -> pure [(x, ty)]
-    (PTuple ps, TVTuple ts) -> do
+checkPattern env _p tv = case (val _p, tv) of
+    (PAtom x, ty) -> pure [(x, val ty)]
+    (PTuple ps, _ :?> TVTuple ts) -> do
       bindings <- zipWithM (checkPattern env) ps ts
       pure $ concat bindings
-    (PRecord fs, TVRecord ts) -> do
+    (PRecord fs, i :?> TVRecord ts) -> do
       bindings <- forM fs
         $ \(f, p) -> do
           case lookup f ts of
             Just t  -> checkPattern env p t
-            Nothing -> throwError (BadPattern p (TVRecord ts))
+            Nothing -> throwError (fi _p :?> BadPattern p (i :?> TVRecord ts))
       pure $ concat bindings
     (PWildcard, _) -> pure []
     (PAnnot p t1, t2) -> do
       t1' <- elaborateType env t1
-      t1' `isSubtypeOf` t2 >>= flip unless (throwError (TypeMismatch t1' t2))
+      t1' `isSubtypeOf` t2 >>= flip unless (throwError (t2 $> TypeMismatch t1' t2))
       checkPattern env p t1'
-    (p, v) -> throwError (BadPattern p v)
+    (_, v) -> throwError (fi _p :?> BadPattern _p v)
 
 inferTypePattern :: String |-> TypeValue
-                 -> TypePattern
-                 -> TypeCheckT m (TypeValue, String |-> TypeValue)
-inferTypePattern env = \case
-  TPAtom td x -> do
-    lvl <- getCurrentLevel
-    traceM $ "inferTypePattern " ++ x ++ " level " ++ show lvl
-    i <- newVar lvl
-    pure $ TVVar td lvl i :@: [(x, TVVar td lvl i)]
-  TPTuple ps  -> do
-    (ts, bindings) <- mapAndUnzipM (inferTypePattern env) ps
-    pure (TVTuple ts, concat bindings)
-  TPRecord fs -> do
-    (ts, bindings) <- mapAndUnzipM (inferTypePattern env) (snd <$> fs)
-    pure (TVRecord (zip (fst <$> fs) ts), concat bindings)
+                 -> TypePattern'
+                 -> TypeCheckT m (TypeValue', String |-> TypeValue)
+inferTypePattern env (WithFI info _p) = case _p of
+      TPAtom td x -> do
+        lvl <- getCurrentLevel
+        i <- newVar lvl
+        pure (info :?> TVVar td lvl i , [(x, TVVar td lvl i)])
+      TPTuple ps  -> do
+        (ts, bindings) <- mapAndUnzipM (inferTypePattern env) ps
+        pure (info :?> TVTuple ts, concat bindings)
+      TPRecord fs -> do
+        (ts, bindings) <- mapAndUnzipM (inferTypePattern env) (snd <$> fs)
+        pure (info :?> TVRecord (zip (fst <$> fs) ts), concat bindings)
 
-unify :: TypeValue -> TypeValue -> TypeCheckT m ()
-unify = curry
-  $ \case
+unify :: TypeValue' -> TypeValue' -> TypeCheckT m ()
+unify (WithFI _ tv1) (WithFI _ tv2) = case (tv1, tv2) of
     (TVPrimitive p1, TVPrimitive p2)
       | p1 == p2 -> pure ()
     (TVVar td1 lvl1 idx1, TVVar td2 lvl2 idx2)
@@ -256,7 +253,7 @@ unify = curry
     (TVRecord fs1, TVRecord fs2) -> forM_ fs1
       $ \(f, t1) -> case lookup f fs2 of
         Just t2 -> unify t1 t2
-        Nothing -> throwError (MissingField f)
+        Nothing -> error "Never happens"
     (TVArrow ts1 t1, TVArrow ts2 t2)
       | length ts1 == length ts2 -> do
         zipWithM_ unify ts1 ts2
@@ -268,14 +265,13 @@ unify = curry
 --   A can be substituted for B
 --   TVBot is the most general type
 --   TVTop is the most specific type
-isSubtypeOf :: TypeValue -> TypeValue -> TypeCheckT m Bool
-isSubtypeOf = curry
-  $ \case
+isSubtypeOf :: TypeValue' -> TypeValue' -> TypeCheckT m Bool
+isSubtypeOf tv1 tv2 = case (val tv1, val tv2) of
     (TVBot, _) -> pure True
     (_, TVTop) -> pure True
     (TVPrimitive p1, TVPrimitive p2) -> pure (p1 == p2)
-    (TVLam _ _ tv, ty) -> isSubtypeOf tv ty
-    (ty, TVLam _ _ tv) -> isSubtypeOf ty tv
+    (TVLam _ _ tv, _) -> isSubtypeOf tv tv2
+    (_, TVLam _ _ tv) -> isSubtypeOf tv1 tv
     (TVVar _ lvl idx, TVVar _ lvl' idx') -> do
       border <- getBorder lvl idx
       border' <- getBorder lvl' idx'
@@ -287,24 +283,24 @@ isSubtypeOf = curry
         $ \b -> forM border'
         $ \b' -> liftA2
           (&&)
-          (isSubtypeOf (top b) (top b'))
-          (isSubtypeOf (bot b') (bot b))
-    (TVVar _ lvl idx, t) -> fmap and
+          (isSubtypeOf (fi tv1 :?> top b) (fi tv2 :?> top b'))
+          (isSubtypeOf (fi tv2 :?> bot b') (fi tv1 :?> bot b))
+    (TVVar _ lvl idx, _) -> fmap and
       $ do
         borders <- getBorder lvl idx
         forM borders
           $ \border -> liftA2
             (&&)
-            (isSubtypeOf (top border) t)
-            (isSubtypeOf t (bot border))
-    (t, TVVar _ lvl idx) -> fmap and
+            (isSubtypeOf (fi tv1 :?> top border) tv2)
+            (isSubtypeOf tv2 (fi tv1 :?> bot border))
+    (_, TVVar _ lvl idx) -> fmap and
       $ do
         borders <- getBorder lvl idx
         forM borders
           $ \border -> liftA2
             (&&)
-            (isSubtypeOf t (top border))
-            (isSubtypeOf (bot border) t)
+            (isSubtypeOf tv1 (fi tv2 :?> top border))
+            (isSubtypeOf (fi tv2 :?> bot border) tv1)
     (TVTuple ts1, TVTuple ts2)
       | length ts1 == length ts2 -> and <$> zipWithM isSubtypeOf ts1 ts2
     (TVRecord fs1, TVRecord fs2) -> fmap and <$> forM fs1
@@ -318,27 +314,27 @@ isSubtypeOf = curry
         pure (and ts && t)
     _ -> pure False
 
-reduce :: Level -> [TypeValue] -> TypeValue -> TypeCheckT m TypeValue
-reduce lvl ts = \case
+reduce :: Level -> [TypeValue'] -> TypeValue' -> TypeCheckT m TypeValue'
+reduce lvl ts _tv = forM _tv \case
   TVVar td lvl' idx -> do
     if lvl' == lvl
       then
         -- If the variable is in the current level, we can reduce it
         maybe
-          (throwError $ TypeVariableOutOfScope lvl idx)
+          (throwError (fi _tv :?> TypeVariableOutOfScope lvl idx))
           pure
-          (lookup idx (zip [0 ..] ts))
+          (lookup idx (zip [0 ..] (val <$> ts)))
       else
         -- Otherwise, we need to update the border
         do
           border <- getBorder lvl' idx
           border' <- forM border
             $ \(Border top' bot') -> do
-              top'' <- reduce lvl ts top'
-              bot'' <- reduce lvl ts bot'
+              top'' <- val <$> reduce lvl ts (fi _tv :?> top')
+              bot'' <- val <$> reduce lvl ts (fi _tv :?> bot')
               pure $ Border top'' bot''
           setBorder lvl' idx border'
-          pure (TVVar td lvl' idx)
+          pure $ TVVar td lvl' idx
   TVTuple ts' -> TVTuple <$> zipWithM (reduce lvl) (repeat ts) ts'
   TVRecord fs -> TVRecord <$> mapM (\(f, t) -> (f, ) <$> reduce lvl ts t) fs
   TVArrow ts' t -> TVArrow <$> mapM (reduce lvl ts) ts' <*> reduce lvl ts t
@@ -346,47 +342,46 @@ reduce lvl ts = \case
     -> TVLam <$> mapM (reduce lvl ts) ts' <*> pure lvl' <*> reduce lvl ts tv
   t -> pure t
 
-deduce :: Level -> TypeValue -> TypeValue -> TypeCheckT m [(Int, TypeValue)]
-deduce lvl = curry
-  \case
-    -- (TVLam _ _ tv, ty) -> deduce lvl tv ty
-    -- (ty, TVLam _ _ tv) -> deduce lvl ty tv
-    (tv@(TVVar _ lvl' idx), t) -> do
-      unlessM (isSubtypeOf t tv) $ throwError (TypeMismatch t tv)
-      border <- getBorder lvl idx
-      tys <- fmap concat
-        $ forM border
-        $ \(Border top' bot') -> do
-          top'' <- deduce lvl top' t
-          bot'' <- deduce lvl t bot'
-          pure $ top'' ++ bot''
-      pure $ bool [] [(idx, t)] (lvl == lvl') ++ tys
-    (t, tv@(TVVar _ lvl' idx)) -> do
-      unlessM (isSubtypeOf tv t) $ throwError (TypeMismatch tv t)
-      border <- getBorder lvl idx
-      tys <- fmap concat
-        $ forM border
-        $ \(Border top' bot') -> do
-          top'' <- deduce lvl t top'
-          bot'' <- deduce lvl bot' t
-          pure $ top'' ++ bot''
-      pure $ bool [] [(idx, t)] (lvl == lvl') ++ tys
-    (TVTuple ts1, TVTuple ts2)
-      | length ts1 == length ts2 -> concat <$> zipWithM (deduce lvl) ts1 ts2
-    (TVRecord fs1, TVRecord fs2) -> fmap concat
-      $ forM fs2
-      $ \(f, t1) -> case lookup f fs1 of
-        Just t2 -> deduce lvl t1 t2
-        Nothing -> throwError (MissingField f)
-    (TVArrow ts1 t1, TVArrow ts2 t2) -> do
-      ts <- concat <$> zipWithM (deduce lvl) ts2 ts1
-      t <- deduce lvl t1 t2
-      pure $ ts ++ t
-    (a, b) -> unlessM (isSubtypeOf b a) (throwError (TypeMismatch a b))
-      >> pure []
+deduce :: Level -> TypeValue' -> TypeValue' -> TypeCheckT m [(Int, TypeValue')]
+deduce lvl _l _r = case (val _l, val _r) of
+        -- (TVLam _ _ tv, ty) -> deduce lvl tv ty
+        -- (ty, TVLam _ _ tv) -> deduce lvl ty tv
+        (TVVar _ lvl' idx, _) -> do
+          unlessM (isSubtypeOf _r _l) $ throwError (fi _r :?> TypeMismatch _l _r)
+          border <- getBorder lvl idx
+          tys <- fmap concat
+            $ forM border
+            $ \(Border top' bot') -> do
+              top'' <- deduce lvl (fi _l :?> top') _r
+              bot'' <- deduce lvl _r (fi _l :?> bot')
+              pure $ top'' ++ bot''
+          pure $ bool [] [(idx, _r)] (lvl == lvl') ++ tys
+        (_, TVVar _ lvl' idx) -> do
+          unlessM (isSubtypeOf _r _l) $ throwError (fi _l :?> TypeMismatch _r _l)
+          border <- getBorder lvl idx
+          tys <- fmap concat
+            $ forM border
+            $ \(Border top' bot') -> do
+              top'' <- deduce lvl _l (fi _r :?> top')
+              bot'' <- deduce lvl (fi _r :?> bot') _l
+              pure $ top'' ++ bot''
+          pure $ bool [] [(idx, _l)] (lvl == lvl') ++ tys
+        (TVTuple ts1, TVTuple ts2)
+          | length ts1 == length ts2 -> concat <$> zipWithM (deduce lvl) ts1 ts2
+        (TVRecord fs1, TVRecord fs2) -> fmap concat
+          $ forM fs2
+          $ \(f, t1) -> case lookup f fs1 of
+            Just t2 -> deduce lvl t1 t2
+            Nothing -> throwError (fi _l :?> MissingField f)
+        (TVArrow ts1 t1, TVArrow ts2 t2) -> do
+          ts <- concat <$> zipWithM (deduce lvl) ts2 ts1
+          t <- deduce lvl t1 t2
+          pure $ ts ++ t
+        _ -> unlessM (isSubtypeOf _r _l) (throwError (fi _r :?> TypeMismatch _l _r))
+          >> pure []
 
-topmost :: TypeValue -> TypeValue -> TypeCheckT m TypeValue
-topmost (TVRecord fs1) (TVRecord fs2) = TVRecord
+topmost :: TypeValue' -> TypeValue' -> TypeCheckT m TypeValue'
+topmost (_ :?> TVRecord fs1) (i :?> TVRecord fs2) =  fmap (i :?>) $ TVRecord
   <$> sequence
     (do
        (l1, t1) <- fs1
@@ -394,30 +389,29 @@ topmost (TVRecord fs1) (TVRecord fs2) = TVRecord
        if l1 == l2
          then pure ((l1, ) <$> topmost t1 t2)
          else pure <$> [(l1, t1), (l2, t2)])
-topmost (TVTuple ts1) (TVTuple ts2) = TVTuple <$> zipWithM topmost ts1 ts2
-topmost (TVArrow ts1 t1) (TVArrow ts2 t2) =
+topmost (_ :?> TVTuple ts1) (i :?> TVTuple ts2) = fmap (i :?>) $ TVTuple <$> zipWithM topmost ts1 ts2
+topmost (_ :?> TVArrow ts1 t1) (i :?> TVArrow ts2 t2) = fmap (i :?>) $
   TVArrow <$> zipWithM botmost ts1 ts2 <*> topmost t1 t2
 topmost a b = isSubtypeOf a b
   >>= \case
-    True  -> pure b
+    True  -> pure a
     False -> isSubtypeOf b a
       >>= \case
-        True  -> pure a
-        False -> pure TVTop
+        True  -> pure b
+        False -> pure (fi b :?> TVTop)
 
-botmost :: TypeValue -> TypeValue -> TypeCheckT m TypeValue
-botmost (TVRecord fs1) (TVRecord fs2) =
-  let flds = do
-        (l1, t1) <- fs1
-        (l2, t2) <- fs2
-        if l1 == l2
-          then pure ((l1, ) <$> botmost t1 t2)
-          else []
-  in if null flds
-     then pure TVBot
-     else TVRecord <$> sequence flds
-botmost (TVTuple ts1) (TVTuple ts2) = TVTuple <$> zipWithM botmost ts1 ts2
-botmost (TVArrow ts1 t1) (TVArrow ts2 t2) =
+
+botmost :: TypeValue' -> TypeValue' -> TypeCheckT m TypeValue'
+botmost (_ :?> TVRecord fs1) (i :?> TVRecord fs2) = fmap (i :?>) $ TVRecord
+  <$> sequence
+    (do
+       (l1, t1) <- fs1
+       (l2, t2) <- fs2
+       if l1 == l2
+         then pure ((l1, ) <$> botmost t1 t2)
+         else pure <$> [(l1, t1), (l2, t2)])
+botmost (_ :?> TVTuple ts1) (i :?> TVTuple ts2) = fmap (i :?>) $ TVTuple <$> zipWithM botmost ts1 ts2
+botmost (_ :?> TVArrow ts1 t1) (i :?> TVArrow ts2 t2) = fmap (i :?>) $
   TVArrow <$> zipWithM topmost ts1 ts2 <*> botmost t1 t2
 botmost a b = isSubtypeOf a b
   >>= \case
@@ -425,10 +419,4 @@ botmost a b = isSubtypeOf a b
     False -> isSubtypeOf b a
       >>= \case
         True  -> pure b
-        False -> pure TVBot
-
-testTypeCheck :: ExprTerm -> Either TypeFailure TypeValue
-testTypeCheck exp = evalState (runExceptT m) Seq.empty
-  where
-    m :: TypeCheckT Identity TypeValue
-    m = elaborate [] exp
+        False -> pure (fi b :?> TVBot)

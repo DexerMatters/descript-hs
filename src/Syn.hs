@@ -1,9 +1,13 @@
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE PatternSynonyms #-}
+
 module Syn where
 
 import           Data.List (intercalate)
 import           GHC.Base (maxInt)
+import           Utils (WithFI)
 
 data BinOp = BinOp { binOpSign :: String
                    , binOpName :: String
@@ -37,21 +41,25 @@ operatorTable =
   , BinOp "EOT" "EOT" maxInt AssocNone]
 
 data Pattern = PAtom String
-             | PTuple [Pattern]
-             | PRecord [(String, Pattern)]
-             | PAnnot Pattern TypeTerm
-             | PAs Pattern String
+             | PTuple [Pattern']
+             | PRecord [(String, Pattern')]
+             | PAnnot Pattern' TypeTerm'
+             | PAs Pattern' String
              | PWildcard
   deriving (Show)
+
+type Pattern' = WithFI Pattern
 
 data TypeDescriptor = Rigid
                     | Flexible
   deriving (Eq, Show)
 
 data TypePattern = TPAtom TypeDescriptor String
-                 | TPTuple [TypePattern]
-                 | TPRecord [(String, TypePattern)]
+                 | TPTuple [TypePattern']
+                 | TPRecord [(String, TypePattern')]
   deriving (Show)
+
+type TypePattern' = WithFI TypePattern
 
 data PrimitiveType = PrimInt
                    | PrimBool
@@ -70,17 +78,19 @@ instance Show PrimitiveType where
 data TypeTerm =
     TVar String                  -- x
   | TPrimitive PrimitiveType     -- int, bool, unit, string
-  | TArrow [TypeTerm] TypeTerm   -- (t1, t2, ..., tn) -> t
-  | TTuple [TypeTerm]            -- (t1, t2, ..., tn)
-  | TRecord [(String, TypeTerm)] -- { l1: t1, l2: t2, ..., ln: tn }
-  | TApp TypeTerm [TypeTerm]     -- t<t1, t2, ..., tn>
-  | TProj TypeTerm String        -- t.l
+  | TArrow [TypeTerm'] TypeTerm'   -- (t1, t2, ..., tn) -> t
+  | TTuple [TypeTerm']            -- (t1, t2, ..., tn)
+  | TRecord [(String, TypeTerm')] -- { l1: t1, l2: t2, ..., ln: tn }
+  | TApp TypeTerm' [TypeTerm']     -- t<t1, t2, ..., tn>
+  | TProj TypeTerm' String        -- t.l
   | THole                        -- ?
     -- Intermediate types
   | TFix Int
-  | TLam [String] TypeTerm
-  | TSeq [TypeTerm]
-  | TLet Int TypeTerm TypeTerm
+  | TLam [String] TypeTerm'
+  | TSeq [TypeTerm']
+  | TLet Int TypeTerm' TypeTerm'
+
+type TypeTerm' = WithFI TypeTerm
 
 instance Show TypeTerm where
   show (TVar x) = "%" ++ show x
@@ -126,32 +136,34 @@ data ExprTerm =
     -- | 42
   | Lit Literal
     -- | (e1, e2, ..., en)
-  | Tuple [ExprTerm]
+  | Tuple [ExprTerm']
     -- | { l1 = e1, l2 = e2, ..., ln = en }
-  | Record [(String, ExprTerm)]
+  | Record [(String, ExprTerm')]
     -- | e.l
-  | Proj ExprTerm String
+  | Proj ExprTerm' String
     -- | (e1, e2, ..., en) => e
     -- | (e1, e2, ..., en) t => e
-  | Fun [Pattern] (Maybe TypeTerm) ExprTerm
+  | Fun [Pattern'] (Maybe TypeTerm') ExprTerm'
     -- | forall<tp1, tp2, ..., tpn> e
-  | Forall [TypePattern] ExprTerm
+  | Forall [TypePattern'] ExprTerm'
     -- | e1(e2, e3, ..., en)
-  | App ExprTerm [ExprTerm]
+  | App ExprTerm' [ExprTerm']
     -- | e<t1, t2, ..., tn>
-  | App' ExprTerm [TypeTerm]
+  | App' ExprTerm' [TypeTerm']
     -- | let x = e1; e2
-  | Let Pattern ExprTerm ExprTerm
+  | Let Pattern' ExprTerm' ExprTerm'
     -- | if (e1) e2 else e3
-  | If ExprTerm ExprTerm ExprTerm
+  | If ExprTerm' ExprTerm' ExprTerm'
     -- | { e1; e2; ...; en }
-  | Seq [ExprTerm]
+  | Seq [ExprTerm']
     -- | keyword e
-  | Keyword String (Either ExprTerm TypeTerm)
+  | Keyword String (Either ExprTerm' TypeTerm')
     -- | type t = t'; body
     -- | type t<x1, x2, ..., xn> = t'; body
-  | TypeAlias String (Maybe [TypePattern]) TypeTerm ExprTerm
+  | TypeAlias String (Maybe [TypePattern']) TypeTerm' ExprTerm'
     -- Special cases
   | Native
   deriving (Show)
+
+type ExprTerm' = WithFI ExprTerm
 
