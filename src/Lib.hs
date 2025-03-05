@@ -1,38 +1,19 @@
-{-# OPTIONS_GHC -Wno-missing-export-lists #-}
-
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module Lib where
 
-import           Text.Megaparsec (parse, errorBundlePretty)
-import           Utils (fatal)
-import           Parser (allowedAll)
-import           Pretty (render)
-import           TypePretty (testInferType)
-import           System.IO
+import LSP (generateMessages)
+import System.Environment (getArgs)
 
 runTest :: () -> IO ()
 runTest () = do
-  -- hSetBuffering stdout NoBuffering
-  -- putStr "> "
-  -- raw <- getLine
-  -- case parse allowedAll "" raw of
-  --   Left err  -> putStrLn . fatal $ errorBundlePretty err
-  --   Right ast -> do
-  --     case testInferType ast of
-  --       Left err   -> putStrLn . fatal $ show err
-  --       Right ptty -> putStrLn $ render ptty
-  -- runTest ()
-
-
-  -- Read the file
-  raw <- readFile filePath
-  case parse allowedAll "" raw of
-    Left err  -> putStrLn . fatal $ errorBundlePretty err
-    Right ast -> do
-      case testInferType ast of
-        Left err   -> putStrLn . fatal $ show err
-        Right ptty -> putStrLn $ render ptty
-  where
-    filePath = "/home/dexer/Repos/haskell/descript-hs/demo/test.ds"
-
+  args <- getArgs
+  let code = case args of
+        ["-t", x] -> x
+        _ -> error "Usage: descript -t <code>"
+  code' <- readFile "/home/dexer/Repos/haskell/descript-hs/demo/test.ds"
+  LSP.generateMessages code

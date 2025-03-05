@@ -1,4 +1,4 @@
-name:                descript-hs
+name:                descript
 version:             0.1.0.0
 github:              "githubuser/descript-hs"
 license:             BSD-3-Clause
@@ -39,6 +39,7 @@ library:
   - containers
   - vector
   - mtl
+  - json
   - megaparsec
 
 executables:
@@ -50,7 +51,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - descript-hs
+    - descript
 
 tests:
   descript-hs-test:
@@ -61,4 +62,4 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - descript-hs
+    - descript

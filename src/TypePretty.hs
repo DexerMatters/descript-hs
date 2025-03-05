@@ -1,138 +1,91 @@
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 module TypePretty where
 
-import           Syn (PrimitiveType, TypeDescriptor, ExprTerm')
-import           Utils (Level, Index, (!!!), WithFI(..), fiEmpty)
-import           TypeUtils (TypeValue(..), TypeCheckT, Border, TypeFailure)
-import           Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
+import Pretty
+  ( Pretty,
+    PrettyPrint (..),
+    RawStr,
+    concatWith,
+    freshGreek,
+    txt,
+  )
+import Syn
+  ( PrimitiveType,
+    TypeDescriptor,
+  )
+import Utils
+  ( Index,
+    Level,
+    pattern (:?>),
+  )
 import qualified Utils as U
-import           Control.Monad (foldM)
-import           TypeElab (botmost, elaborate, topmost)
-import           Control.Monad.State (get, evalState)
-import           Control.Monad.Except (runExceptT)
-import           Pretty (Pretty, PrettyPrint(..), txt
-                       , Color(Italics, Green, Bold), freshGreek, ( #> )
-                       , concatWith, RawStr)
-import           Data.Bifunctor (Bifunctor(second))
 
-data TypePtty = PttyPrimitive PrimitiveType
-              | PttyLam [((Level, Index), BorderPtty)] TypePtty
-              | PttyVar TypeDescriptor Level Index
-              | PttyTop
-              | PttyBot
-              | PttyArrow [TypePtty] TypePtty
-              | PttyTuple [TypePtty]
-              | PttyRecord [(String, TypePtty)]
+data TypePtty
+  = PttyPrimitive PrimitiveType
+  | PttyLam [((Level, Index, String), BorderPtty)] TypePtty'
+  | PttyVar BorderPtty TypeDescriptor Level Index
+  | PttyTop
+  | PttyBot
+  | PttyArrow [TypePtty'] TypePtty'
+  | PttyTuple [TypePtty']
+  | PttyRecord [(String, TypePtty')]
   deriving (Show)
 
-type BorderPtty = U.Border TypePtty
+type TypePtty' = U.WithFI TypePtty
+
+type BorderPtty = U.Border TypePtty'
 
 instance Show BorderPtty where
   show (U.Border t b) = show b ++ "~" ++ show t
 
 instance PrettyPrint BorderPtty (Int, Int) where
-  pretty (U.Border PttyBot PttyTop) = txt "∅"
+  pretty (U.Border (_ :?> PttyBot) (_ :?> PttyTop)) = txt "∅"
   pretty (U.Border t b) = pretty b <> txt "~" <> pretty t
 
-instance PrettyPrint TypePtty (Int, Int) where
-  pretty (PttyPrimitive pt) = txt $ show pt
-  pretty (PttyVar _ lvl idx) = Italics Green #> freshGreek (lvl, idx)
-  pretty PttyTop = Italics Green #> txt "⊤"
-  pretty PttyBot = Italics Green #> txt "⊥"
-  pretty (PttyArrow args ret) = txt "("
-    <> concatWith (txt ", ") (pretty <$> args)
-    <> txt ") -> "
-    <> pretty ret
-  pretty (PttyTuple elems) =
+pretty0 :: TypePtty' -> Pretty (Int, Int) RawStr
+pretty0 t@(U.FI "" _ _ U.:?> (PttyVar border _ _ _)) =
+  pretty t <> txt ": " <> pretty border
+pretty0 t = pretty t
+
+instance PrettyPrint TypePtty' (Int, Int) where
+  pretty :: TypePtty' -> Pretty (Int, Int) RawStr
+  pretty (_ :?> PttyPrimitive pt) = txt $ show pt
+  pretty (U.FI "" _ _ U.:?> PttyVar _ _ lvl idx) = freshGreek (lvl, idx)
+  pretty (U.FI x _ _ U.:?> PttyVar {}) = txt x
+  pretty (_ :?> PttyTop) = txt "⊤"
+  pretty (_ :?> PttyBot) = txt "⊥"
+  pretty (_ :?> PttyArrow args ret) =
+    txt "("
+      <> concatWith (txt ", ") (pretty <$> args)
+      <> txt ") -> "
+      <> pretty ret
+  pretty (_ :?> PttyTuple elems) =
     txt "(" <> concatWith (txt ", ") (pretty <$> elems) <> txt ")"
-  pretty (PttyRecord fields) =
+  pretty (_ :?> PttyRecord fields) =
     txt "{" <> concatWith (txt ", ") parseFields <> txt "}"
     where
       parseFields = (\(l, t) -> txt l <> txt ": " <> pretty t) <$> fields
-  pretty (PttyLam vars body) =
-    let args = parseVar . fst <$> vars
-        hasWhere = flip any vars
-          $ \(_, b) -> case b of
-            U.Border PttyTop PttyBot -> False
-            _ -> True
-    in Bold Green #> txt "∀"
-       <> concatWith (txt ", ") args
-       <> Bold Green #> txt ". "
-       <> pretty body
-       <> if hasWhere
-          then Bold Green #> txt " where "
-            <> concatWith (txt "; ") parseBorders
-          else txt ""
+  pretty (_ :?> PttyLam vars body) =
+    txt "forall "
+      <> concatWith (txt ", ") parseBorders
+      <> txt ". "
+      <> pretty body
     where
       parseBorders =
         flip map vars $ \(v, b) -> parseVar v <> txt ": " <> pretty b
 
-      parseVar (lvl, idx) = Italics Green #> freshGreek (lvl, idx)
+      parseVar (lvl, idx, "") = freshGreek (lvl, idx)
+      parseVar (_, _, x) = txt x
+  pretty _ = error "This should never happen"
 
-quoteType' :: TypeValue -> TypeCheckT m TypePtty
-quoteType' = \case
-  TVTop -> pure PttyTop
-  TVBot -> pure PttyBot
-  TVPrimitive pt -> pure $ PttyPrimitive pt
-  TVVar td lvl idx -> pure $ PttyVar td lvl idx
-  TVArrow args ret -> PttyArrow <$> mapM quoteType' (val <$> args)
-    <*> quoteType' (val ret)
-  TVTuple elems -> PttyTuple <$> mapM quoteType' (val <$> elems)
-  TVRecord fields -> PttyRecord
-    <$> mapM (secondM quoteType') (second val <$> fields)
-  TVLam vars lvl body -> PttyLam . concat
-    <$> mapM (extractVars lvl) (val <$> vars)
-    <*> quoteType' (val body)
-  where
-    secondM f (a, b) = (a, ) <$> f b
-
-quoteType
-  :: Seq (Seq [Border]) -> TypeValue -> Either (WithFI TypeFailure) TypePtty
-quoteType env = flip evalState env . runExceptT . quoteType'
-
-normalizeBorder :: [Border] -> TypeCheckT m BorderPtty
-normalizeBorder border = do
-  let tops = map U.top border
-      bots = map U.bot border
-  -- The bottomost type of the tops
-  top' <- foldM botmost (fiEmpty TVTop) (fiEmpty <$> tops) >>= quoteType' . val
-  -- The topmost type of the bottoms
-  bot' <- foldM topmost (fiEmpty TVBot) (fiEmpty <$> bots) >>= quoteType' . val
-  pure $ U.Border top' bot'
-
-extractVars
-  :: Level -> TypeValue -> TypeCheckT m [((Level, Index), BorderPtty)]
-extractVars lvl tv = get
-  >>= \env -> case tv of
-    TVVar _ lvl' idx
-      | lvl == lvl' -> do
-        let borders = env !!! lvl !!! idx
-        bots <- mapM (extractVars lvl') (U.bot <$> borders)
-        tops <- mapM (extractVars lvl') (U.top <$> borders)
-        p <- normalizeBorder borders
-        pure $ ((lvl, idx), p):concat bots ++ concat tops
-    TVArrow args ret -> do
-      args' <- mapM (extractVars lvl) (val <$> args)
-      ret' <- extractVars lvl (val ret)
-      pure $ concat args' ++ ret'
-    TVTuple elems -> concat <$> mapM (extractVars lvl) (val <$> elems)
-    TVRecord fields -> concat
-      <$> mapM (extractVars lvl . snd) (second val <$> fields)
-    _x -> pure []
-
-testInferType
-  :: ExprTerm' -> Either (WithFI TypeFailure) (Pretty (Int, Int) RawStr)
-testInferType expr = evalState (runExceptT m) Seq.Empty
-  where
-    m = do
-      tv <- elaborate [] expr
-      quoted <- quoteType' (val tv)
-      pure $ Green #> pretty quoted
+pretty' :: TypePtty' -> Pretty (Int, Int) RawStr
+pretty' = pretty

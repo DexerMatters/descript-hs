@@ -1,1 +1,5 @@
-(x) => (x.a, x.b)
+{
+    let id2 = (x) => x(12);
+    let f = (x:int) => x;
+    id2(f)
+}
