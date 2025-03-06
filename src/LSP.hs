@@ -20,6 +20,7 @@ import Data.List.NonEmpty (toList)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Ord (Down (Down))
 import qualified Data.Set as Set
+import Debug.Trace (traceM)
 import GHC.IORef (readIORef)
 import GHC.TopHandler (runIO)
 import Parser (allowedAll)
@@ -73,6 +74,8 @@ generateMessages code = runIO $ do
       modifyIORef' diags (diags' ++)
       output diags hovers comps
     Right term -> return term
+
+  -- traceM $ "Term: " ++ show term
 
   let env@(TypeEnv _ traces scopes) =
         runIdentity $

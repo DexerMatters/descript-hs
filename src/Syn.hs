@@ -11,7 +11,6 @@ import Utils (WithFI)
 data BinOp = BinOp
   { binOpSign :: String,
     binOpName :: String,
-    binOpPrec :: Int,
     binOpAssoc :: Assoc
   }
   deriving (Eq)
@@ -27,19 +26,20 @@ data Assoc
 
 operatorTable :: [BinOp]
 operatorTable =
-  [ BinOp "&&" "and" 1 AssocLeft,
-    BinOp "||" "or" 2 AssocLeft,
-    BinOp "<" "lt" 3 AssocNone,
-    BinOp "<=" "le" 3 AssocNone,
-    BinOp ">" "gt" 3 AssocNone,
-    BinOp ">=" "ge" 3 AssocNone,
-    BinOp "+" "add" 4 AssocLeft,
-    BinOp "-" "sub" 4 AssocLeft,
-    BinOp "*" "mul" 5 AssocLeft,
-    BinOp "/" "div" 5 AssocLeft,
-    BinOp "%" "mod" 5 AssocLeft,
-    -- Most precedence
-    BinOp "EOT" "EOT" maxInt AssocNone
+  [ BinOp "=" "assign" AssocNone,
+    BinOp "==" "eq" AssocNone,
+    BinOp "!=" "neq" AssocNone,
+    BinOp "<" "lt" AssocNone,
+    BinOp "<=" "le" AssocNone,
+    BinOp ">" "gt" AssocNone,
+    BinOp ">=" "ge" AssocNone,
+    BinOp "&&" "and" AssocLeft,
+    BinOp "||" "or" AssocLeft,
+    BinOp "+" "add" AssocLeft,
+    BinOp "-" "sub" AssocLeft,
+    BinOp "*" "mul" AssocLeft,
+    BinOp "/" "div" AssocLeft,
+    BinOp "%" "mod" AssocLeft
   ]
 
 data Pattern
@@ -169,7 +169,7 @@ data ExprTerm
     -- | type t<x1, x2, ..., xn> = t'; body
     TypeAlias String (Maybe [TypePattern']) TypeTerm' ExprTerm'
   | -- Special cases
-    Native
+    Absurd
   deriving (Show)
 
 type ExprTerm' = WithFI ExprTerm

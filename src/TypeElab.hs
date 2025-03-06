@@ -169,6 +169,7 @@ elaborate bindings fiExp = diagnose id $ forM fiExp $ \case
     liftA2 (&&) (tT `isSubtypeOf` fT) (fT `isSubtypeOf` tT)
       >>= flip unless (throwError (fi fT <> fi tT :?> TypeMismatch tT fT))
     pure $ val tT
+  Keyword "absurd" (Right ty) -> val <$> elaborateType bindings ty
   _ -> error "Not implemented"
   where
     info = fi fiExp

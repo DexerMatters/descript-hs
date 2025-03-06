@@ -6,10 +6,14 @@ module Parser where
 
 import Data.Foldable (Foldable (fold))
 import Data.Functor (($>))
+import Data.List (elemIndex)
+import Data.Maybe (fromJust)
 import Data.Void (Void)
+import Debug.Trace (traceM)
 import GHC.Base (Alternative (..))
 import Syn
-  ( BinOp (..),
+  ( Assoc (..),
+    BinOp (..),
     ExprTerm (..),
     ExprTerm',
     Literal (..),
@@ -29,6 +33,7 @@ import Text.Megaparsec
     anySingle,
     between,
     choice,
+    getInput,
     getOffset,
     manyTill,
     optional,
@@ -36,7 +41,7 @@ import Text.Megaparsec
   )
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
-import Utils (FI (..), WithFI (..), type ($))
+import Utils (FI (..), WithFI (..), tr, type ($))
 
 type Parser = Parsec Void String
 
@@ -89,9 +94,9 @@ typeIdent = lexeme $ (:) <$> upperChar <*> many alphaNumChar
 
 sepBy2 :: Parser a -> Parser b -> Parser [a]
 sepBy2 a b = do
-  first <- a
-  rest <- some $ b *> a
-  pure $ first : rest
+  x <- a
+  xs <- some $ b *> a
+  pure $ x : xs
 
 parseLiteral :: Parser Literal
 parseLiteral =
@@ -179,11 +184,26 @@ parseBinaryOp :: BinOp -> Parser ExprTerm'
 parseBinaryOp op =
   withFI' $
     do
-      sepBy2 allowedArith (withFI $ symbol $ binOpSign op)
-      >>= \case
-        [x] -> pure x
-        (x : xs) -> pure $ foldl (binOp (WithFI (FI "" 0 0) op)) x xs
-        _ -> fail "impossible"
+      let opPos = elemIndex op operatorTable
+      let highers = drop (fromJust opPos + 1) operatorTable
+      let allowed = choice $ (try . parseBinaryOp <$> highers) ++ [allowedArith]
+      items <- sepBy2 allowed (withFI $ symbol $ binOpSign op)
+      case binOpAssoc op of
+        AssocLeft ->
+          case items of
+            [x] -> pure x
+            (x : xs) -> pure $ foldl (binOp (WithFI (FI "" 0 0) op)) x xs
+            _ -> fail "impossible"
+        AssocRight ->
+          case items of
+            [x] -> pure x
+            (x : xs) -> pure $ foldr (binOp (WithFI (FI "" 0 0) op)) x xs
+            _ -> fail "impossible"
+        AssocNone ->
+          case items of
+            [x] -> pure x
+            [a, b] -> pure $ binOp (WithFI (FI "" 0 0) op) a b
+            _ -> fail $ "Operator " ++ binOpSign op ++ " is not associative"
 
 parseRecord :: Parser ExprTerm'
 parseRecord =
@@ -257,7 +277,10 @@ parseSequence =
 parseKeywords :: Parser ExprTerm'
 parseKeywords =
   withFI $
-    choice [Keyword "check" . Right <$> (symbol "check" *> parseTypeTerm 0)]
+    choice
+      [ Keyword "check" . Right <$> (symbol "check" *> parseTypeTerm 0),
+        Keyword "absurd" . Right <$> (symbol "absurd" *> parseTypeTerm 0)
+      ]
 
 parseForall :: Parser ExprTerm'
 parseForall =
@@ -428,7 +451,7 @@ allExpr =
           parseRecord, -- 7
           parseTuple, -- 8
           parseProj, -- 9
-          parseBinaryOp (operatorTable !! 6), -- 10
+          choice $ try . parseBinaryOp <$> operatorTable, -- 10
           parseApp, -- 11
           parsePolyApp, -- 12
           parseLiteralExpr, -- 13
