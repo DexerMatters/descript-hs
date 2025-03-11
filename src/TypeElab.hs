@@ -53,7 +53,7 @@ elaborate ::
   String |-> TypeValue' ->
   -- | Expression
   ExprTerm' ->
-  TypeCheckT m (WithFI TypeValue)
+  TypeCheckT m TypeValue'
 elaborate bindings fiExp = diagnose id $ forM fiExp $ \case
   Lit l ->
     TVPrimitive
